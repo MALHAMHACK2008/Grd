@@ -5,14 +5,14 @@ import requests
 import telebot
 from telebot import types
 
-BOT_TOKEN = "8808422049:AAETrng6DwoxDSw5459fRyhFFecKUz6JBo4"  # من BotFather
-URL = "https://monkeybase.hellgems.com/api/admonkey/earn/heartbeat[span_0](start_span)"[span_0](end_span)
-PAYLOAD = {"mode": "turbo"}[span_1](start_span)[span_1](end_span)[span_2](start_span)[span_2](end_span)
+# ضع توكن البوت الخاص بك هنا
+BOT_TOKEN = "8808422049:AAETrng6DwoxDSw5459fRyhFFecKUz6JBo4"
+URL = "https://monkeybase.hellgems.com/api/admonkey/earn/heartbeat"
+PAYLOAD = {"mode": "turbo"}
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# تخزين حالة كل مستخدم على حدة
-# user_id: {"active": bool, "token": str, "usdt": float, "rate": float, "hits": int, "status": str}
+# تخزين بيانات التعدين لكل مستخدم
 users_mining = {}
 
 
@@ -20,25 +20,25 @@ def mining_thread(user_id):
   while users_mining.get(user_id, {}).get("active", False):
     token = users_mining[user_id]["token"]
     headers = {
-        "Host": "monkeybase.hellgems.com",[span_3](start_span)[span_3](end_span)
-        "accept": "*/*",[span_4](start_span)[span_4](end_span)
-        "content-type": "application/json",[span_5](start_span)[span_5](end_span)
+        "Host": "monkeybase.hellgems.com",
+        "accept": "*/*",
+        "content-type": "application/json",
         "user-agent": (
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like"
-            " Gecko) Chrome/137.0.0.0 Mobile Safari/537.36[span_6](start_span)"[span_6](end_span)
+            " Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
         ),
         "x-telegram-init-data": token,
-        "origin": "https://monkey.hellgems.com",[span_7](start_span)[span_7](end_span)
-        "referer": "https://monkey.hellgems.com/",[span_8](start_span)[span_8](end_span)
+        "origin": "https://monkey.hellgems.com",
+        "referer": "https://monkey.hellgems.com/",
     }
 
     try:
       res = requests.post(URL, headers=headers, json=PAYLOAD, timeout=10)
       if res.status_code == 200:
         data = res.json()
-        users_mining[user_id]["rate"] = data.get("ratePerHour", 0)[span_9](start_span)[span_9](end_span)
-        user_data = data.get("current", {}).get("user", {})[span_10](start_span)[span_10](end_span)
-        users_mining[user_id]["usdt"] = user_data.get("usdtBalance", 0)[span_11](start_span)[span_11](end_span)
+        users_mining[user_id]["rate"] = data.get("ratePerHour", 0)
+        user_data = data.get("current", {}).get("user", {})
+        users_mining[user_id]["usdt"] = user_data.get("usdtBalance", 0)
         users_mining[user_id]["hits"] += 1
         users_mining[user_id]["status"] = "شغال بنمط Turbo"
       elif res.status_code == 401:
@@ -54,7 +54,7 @@ def mining_thread(user_id):
     except Exception as e:
       users_mining[user_id]["status"] = f"خطأ اتصال: {e}"
 
-    time.sleep(1.5)  # الفاصل الزمني للوصول إلى السرعة القصوى
+    time.sleep(1.5)
 
 
 def get_menu():
@@ -85,7 +85,8 @@ def welcome(msg):
   bot.send_message(
       msg.chat.id,
       "👋 مرحباً بك في بوت تعدين AdMonkey المشترك!\n\n"
-      "للبدء، اضغط على زر **🔑 إدخال / تحديث التوكن** وأرسل توكن حسابك أو رابط اللعبة.",
+      "للبدء، اضغط على زر **🔑 إدخال / تحديث التوكن** وأرسل توكن حسابك أو رابط"
+      " اللعبة.",
       parse_mode="Markdown",
       reply_markup=get_menu(),
   )
@@ -156,7 +157,6 @@ def save_token(msg):
   uid = msg.from_user.id
   data = msg.text.strip()
 
-  # فك الرابط في حال أرسل رابط اللعبة كاملاً
   if "#tgWebAppData=" in data:
     token_part = data.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0]
     token = urllib.parse.unquote(token_part)
