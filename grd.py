@@ -5,18 +5,19 @@ import requests
 import telebot
 from telebot import types
 
-# ضع توكن البوت الخاص بك هنا
+# --- إعدادات البوت واللعبة ---
 BOT_TOKEN = "8808422049:AAETrng6DwoxDSw5459fRyhFFecKUz6JBo4"
 URL = "https://monkeybase.hellgems.com/api/admonkey/earn/heartbeat"
 PAYLOAD = {"mode": "turbo"}
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# تخزين بيانات التعدين لكل مستخدم
+# تخزين بيانات التعدين لكل مستخدم بشكل منفصل
 users_mining = {}
 
 
 def mining_thread(user_id):
+  """خيط التعدين المستمر في الخلفية لكل مستخدم"""
   while users_mining.get(user_id, {}).get("active", False):
     token = users_mining[user_id]["token"]
     headers = {
@@ -46,7 +47,7 @@ def mining_thread(user_id):
         users_mining[user_id]["active"] = False
         bot.send_message(
             user_id,
-            "⚠️ انتهت صلاحية التوكن الخاص بك، أرسل توكناً جديداً للاستمرار.",
+            "⚠️ انتهت صلاحية التوكن الخاص بك، يرجى إرسال توكن جديد للاستمرار.",
         )
         break
       else:
@@ -54,10 +55,11 @@ def mining_thread(user_id):
     except Exception as e:
       users_mining[user_id]["status"] = f"خطأ اتصال: {e}"
 
-    time.sleep(1.5)
+    time.sleep(1.5)  # الفاصل الزمني للوصول إلى السرعة القصوى (0.04)
 
 
 def get_menu():
+  """لوحة الأزرار الرئيسية"""
   kb = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
   kb.add(
       types.KeyboardButton("▶️ بدء التعدين"),
@@ -85,7 +87,7 @@ def welcome(msg):
   bot.send_message(
       msg.chat.id,
       "👋 مرحباً بك في بوت تعدين AdMonkey المشترك!\n\n"
-      "للبدء، اضغط على زر **🔑 إدخال / تحديث التوكن** وأرسل توكن حسابك أو رابط"
+      "للبدء، اضغط على **🔑 إدخال / تحديث التوكن** وأرسل توكن حسابك أو رابط"
       " اللعبة.",
       parse_mode="Markdown",
       reply_markup=get_menu(),
@@ -127,7 +129,9 @@ def handle_text(msg):
       users_mining[uid]["active"] = True
       t = threading.Thread(target=mining_thread, args=(uid,), daemon=True)
       t.start()
-      bot.send_message(msg.chat.id, "✅ تم تشغيل التعدين لحسابك بنجاح!")
+      bot.send_message(
+          msg.chat.id, "✅ تم تشغيل التعدين السحابي لحسابك بنجاح!"
+      )
     else:
       bot.send_message(msg.chat.id, "⚡ التعدين يعمل بالفعل لحسابك.")
 
@@ -141,22 +145,42 @@ def handle_text(msg):
 
   elif text == "📊 رصيدي وحالتي":
     u = users_mining[uid]
-    has_token = "نعم ✅" if u["token"] else "لا ❌"
-    rep = (
-        f"📊 **تقرير حسابك الشخصي:**\n"
-        f"🔑 التوكن مسجل: {has_token}\n"
-        f"📡 الحالة: {u['status']}\n"
-        f"💰 رصيد USDT: `{u['usdt']}`\n"
-        f"⚡ المعدل في الساعة: `{u['rate']}`\n"
-        f"🔄 عدد النبضات: `{u['hits']}`"
+    if not u["token"]:
+      bot.send_message(
+          msg.chat.id,
+          "❌ لم تقم بتسجيل التوكن بعد، اضغط على زر '🔑 إدخال / تحديث التوكن'.",
+      )
+      return
+
+    # إرسال رسالة أولية ثم تحديثها تلقائياً على الشاشة
+    status_msg = bot.send_message(
+        msg.chat.id, "⏳ جاري بدء عرض التحديث المباشر..."
     )
-    bot.send_message(msg.chat.id, rep, parse_mode="Markdown")
+
+    # تحديث الرسالة نفسها 15 مرة بمعدل مرة كل ثانيتين (لمدة 30 ثانية)
+    for _ in range(15):
+      rep = (
+          f"📊 **تقرير حسابك الشخصي (مباشر 🟢):**\n"
+          f"📡 الحالة: {u['status']}\n"
+          f"💰 رصيد USDT: `{u['usdt']}`\n"
+          f"⚡ المعدل في الساعة: `{u['rate']}`\n"
+          f"🔄 عدد النبضات: `{u['hits']}`\n\n"
+          f"_يتحدث تلقائياً على الشاشة..._"
+      )
+      try:
+        bot.edit_message_text(
+            rep, msg.chat.id, status_msg.message_id, parse_mode="Markdown"
+        )
+      except Exception:
+        pass
+      time.sleep(2)
 
 
 def save_token(msg):
   uid = msg.from_user.id
   data = msg.text.strip()
 
+  # فك الرابط تلقائياً إذا أرسل رابط اللعبة كاملاً
   if "#tgWebAppData=" in data:
     token_part = data.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0]
     token = urllib.parse.unquote(token_part)
@@ -178,5 +202,5 @@ def save_token(msg):
 
 
 if __name__ == "__main__":
-  print("[+] البوت الجماعي قيد التشغيل لاستقبال المستخدمين...")
+  print("[+] البوت قيد التشغيل وجاهز للاستخدام...")
   bot.infinity_polling()
