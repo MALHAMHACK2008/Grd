@@ -13,19 +13,18 @@ import telebot
 from telebot import types
 
 # ----------------------------------------------------
-# 0. حل مشكلة Port لـ Render (Dummy Web Server)
+# 0. سيرفر الويب المدمج لخدمة Render Web Service
 # ----------------------------------------------------
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Bot is running smoothly on Render!"
+    return "ATF Multi-Task & Mining Bot is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host="0.0.0.0", port=port)
 
-# تشغيل خادم الويب بخيط منفصل لإسكات فحص البورت في Render
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
@@ -38,6 +37,13 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 
+REPEATABLE_TASKS = [
+    "telegram_react_latest",
+    "website_visit",
+    "youtube_like_comment",
+    "twitter_retweet"
+]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s]: %(message)s",
@@ -48,7 +54,7 @@ active_workers = {}
 waiting_for_token = set()
 
 # ----------------------------------------------------
-# 2. محرك التعدين لكل مستخدم
+# 2. محرك الحسابات المتقدم
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id, init_data):
@@ -66,11 +72,13 @@ class AccountWorker:
         self.miner_level = 0
         self.total_claims = 0
         self.total_boosts = 0
+        self.completed_tasks = 0
         self.last_status = "جاهز للبدء"
         self.message_id = None
         self.last_rendered_text = ""
 
-        # متغيرات حساب الوقت
+        # أوقات المهام والتعدين
+        self.task_cooldowns = {}
         self.last_cycle_sec = 8.5
         self.avg_gain_per_cycle = 0.0100
 
@@ -147,9 +155,33 @@ class AccountWorker:
             return self.last_cycle_sec
         return 8.5
 
-    def get_estimated_time_remaining(self):
+    def process_tasks(self):
+        now = int(time.time())
+        for task in REPEATABLE_TASKS:
+            if self.stop_event.is_set():
+                break
+            if self.task_cooldowns.get(task, 0) > now:
+                continue
+            
+            s = self.send_req("start_task", {"task_id": task, "client_started_at": int(time.time())})
+            dur = int(s.get("task_duration", 15)) if s and s.get("status") == "success" else 15
+            
+            self.last_status = f"⏳ جاري تنفيذ مهمة: {task}"
+            self.update_ui()
+            self.stop_event.wait(dur + 2)
+            
+            c = self.send_req("claim_task", {"task_id": task})
+            if c and c.get("status") == "success":
+                rew = c.get("reward", 0)
+                self.completed_tasks += 1
+                self.last_status = f"🎁 تم جمع جائزة مهمة: {task} (+{rew})"
+                self.update_ui()
+            self.stop_event.wait(3.0)
+
+    def get_estimated_mining_time(self):
+        """حساب الوقت المتبقي لجمع 1 عملة تعدين"""
         if self.pending_reward >= 1.0:
-            return "حان وقت الجمع الآن! ⏳"
+            return "جاهز للجمع الآن! ⏳"
         
         needed = 1.0 - self.pending_reward
         if self.avg_gain_per_cycle <= 0:
@@ -163,6 +195,31 @@ class AccountWorker:
         seconds = total_seconds % 60
 
         if hours > 0:
+            return f"~ {hours} س و {minutes} د"
+        elif minutes > 0:
+            return f"~ {minutes} د و {seconds} ث"
+        else:
+            return f"~ {seconds} ثانية"
+
+    def get_tasks_cooldown_remaining(self):
+        """حساب الوقت المتبقي حتى تتجدد المهام (كل ساعتين)"""
+        now = int(time.time())
+        if not self.task_cooldowns:
+            return "جاهزة للتنفيذ الآن! 🎁"
+
+        # إيجاد أقرب مهمة ستنتهي فترة انتظارها
+        future_cooldowns = [exp for exp in self.task_cooldowns.values() if exp > now]
+        if not future_cooldowns:
+            return "جاهزة للتنفيذ الآن! 🎁"
+
+        nearest_ready = min(future_cooldowns)
+        diff = nearest_ready - now
+
+        hours = diff // 3600
+        minutes = (diff % 3600) // 60
+        seconds = diff % 60
+
+        if hours > 0:
             return f"~ {hours} ساعة و {minutes} دقيقة"
         elif minutes > 0:
             return f"~ {minutes} دقيقة و {seconds} ثانية"
@@ -170,25 +227,32 @@ class AccountWorker:
             return f"~ {seconds} ثانية"
 
     def get_text(self):
-        state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
+        state = "🟢 شغال تلقائياً" if self.is_running else "🔴 متوقف"
         progress = min(100, int((self.pending_reward / 1.0) * 100))
         bars = int(10 * (progress / 100))
         bar = "█" * bars + "░" * (10 - bars)
-        time_left = self.get_estimated_time_remaining() if self.is_running else "البوت متوقف"
+        
+        time_to_1_coin = self.get_estimated_mining_time() if self.is_running else "البوت متوقف"
+        time_to_tasks = self.get_tasks_cooldown_remaining()
 
         return (
-            f"<b>🤖 لوحة تحكم التعدين المباشرة (ATF)</b>\n\n"
+            f"<b>🤖 لوحة تحكم مائنر ATF الذكية</b>\n\n"
             f"• <b>الحالة:</b> {state}\n"
             f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
             f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n\n"
-            f"• <b>التقدم نحو 1 عملة:</b>\n"
-            f"<code>[{bar}] {progress}%</code>\n"
-            f"• <b>المعلق حالياً:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n"
-            f"• <b>⏳ الوقت المتبقي للجمع:</b> <code>{time_left}</code>\n\n"
-            f"• <b>مرات الجمع الناجحة:</b> <code>{self.total_claims}</code>\n"
-            f"• <b>مرات التسريع:</b> <code>{self.total_boosts}</code>\n"
-            f"• <b>النشاط الأخير:</b> <code>{self.last_status}</code>\n"
-            f"<i>(هذه الرسالة تتحدث تلقائياً)</i>"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>💰 تعدين العملات (هدف 1 ATF):</b>\n"
+            f"• <b>التقدم:</b> <code>[{bar}] {progress}%</code>\n"
+            f"• <b>المعلق:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n"
+            f"• <b>⏳ الوقت لجمع 1 عملة:</b> <code>{time_to_1_coin}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>📋 المهام المتكررة (كل ساعتين):</b>\n"
+            f"• <b>المهام المنجزة:</b> <code>{self.completed_tasks}</code>\n"
+            f"• <b>⏳ تجدد المهام القادمة:</b> <code>{time_to_tasks}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>مرات الجمع:</b> <code>{self.total_claims}</code> | <b>تسريع:</b> <code>{self.total_boosts}</code>\n"
+            f"• <b>آخر نشاط:</b> <code>{self.last_status}</code>\n"
+            f"<i>(تتحدث هذه الرسالة تلقائياً مع حركة العدادات)</i>"
         )
 
     def get_markup(self):
@@ -216,20 +280,30 @@ class AccountWorker:
             pass
 
     def loop(self):
+        cycle = 0
         while not self.stop_event.is_set():
             try:
+                # 1. تحديث بيانات المستخدم وأوقات انتظار المهام من السيرفر
                 login = self.send_req("login")
                 if login and login.get("status") == "success":
                     u = login.get("user", {})
                     self.pool_balance = float(u.get("mined_balance", self.pool_balance))
                     self.miner_level = int(u.get("miner_level", self.miner_level))
+                    self.task_cooldowns = login.get("task_cooldowns", {})
 
+                # 2. تسريع التعدين
                 cycle_sec = self.boost()
 
+                # 3. جمع التعدين عند الوصول إلى 1.0 عملة أو أكثر
                 if self.pending_reward >= 1.0:
                     self.claim_mining_reward()
 
+                # 4. فحص وتنفيذ المهام إذا انتهى وقت الانتظار
+                if cycle % 8 == 0:
+                    self.process_tasks()
+
                 self.update_ui()
+                cycle += 1
                 self.stop_event.wait(cycle_sec)
             except Exception as e:
                 logging.error(f"خطأ في حلقة {self.chat_id}: {e}")
@@ -251,7 +325,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 3. توجيهات وأوامر التيليجرام
+# 3. أوامر التيليجرام
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -264,8 +338,8 @@ def cmd_start(message):
         waiting_for_token.add(cid)
         bot.send_message(
             cid,
-            "👋 <b>أهلاً بك في بوت ATF التلقائي!</b>\n\n"
-            "أرسل سطر الـ <b>initData</b> الخاص بحسابك المستخرج من اللعبة لبدء التعدين فوراً:"
+            "👋 <b>أهلاً بك في بوت ATF التلقائي المتكامل!</b>\n\n"
+            "أرسل سطر الـ <b>initData</b> الخاص بحسابك من اللعبة لبدء التعدين ومتابعة مؤقت المهام:"
         )
 
 @bot.message_handler(func=lambda msg: msg.chat.id in waiting_for_token)
@@ -287,7 +361,7 @@ def handle_token_input(message):
     sent = bot.send_message(cid, worker.get_text(), reply_markup=worker.get_markup())
     worker.message_id = sent.message_id
     worker.start()
-    bot.send_message(cid, "🚀 تم ربط الحساب وبدء التعدين والتجميع التلقائي بنجاح!")
+    bot.send_message(cid, "🚀 تم ربط الحساب بنجاح! تم تشغيل التعدين التلقائي ومؤقت المهام المتجددة.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_click(call):
