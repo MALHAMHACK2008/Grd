@@ -13,13 +13,13 @@ import telebot
 from telebot import types
 
 # ----------------------------------------------------
-# 0. سيرفر الويب المدمج لخدمة Render Web Service
+# 0. حل مشكلة Port لـ Render (Dummy Web Server)
 # ----------------------------------------------------
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Multi-Task & Mining Bot is Live!"
+    return "ATF Engine with Full Auto-Tasks is Running 24/7 on Render!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -37,11 +37,12 @@ if not BOT_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 
+# المهام الأربعة المتكررة المدمجة تلقائياً
 REPEATABLE_TASKS = [
-    "telegram_react_latest",
-    "website_visit",
     "youtube_like_comment",
-    "twitter_retweet"
+    "twitter_retweet",
+    "website_visit",
+    "telegram_react_latest"
 ]
 
 logging.basicConfig(
@@ -54,7 +55,7 @@ active_workers = {}
 waiting_for_token = set()
 
 # ----------------------------------------------------
-# 2. محرك الحسابات المتقدم
+# 2. محرك التعدين والمهام التلقائي (AccountWorker)
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id, init_data):
@@ -77,8 +78,9 @@ class AccountWorker:
         self.message_id = None
         self.last_rendered_text = ""
 
-        # أوقات المهام والتعدين
+        # توقيتات المهام والتعدين
         self.task_cooldowns = {}
+        self.task_start_times = {}
         self.last_cycle_sec = 8.5
         self.avg_gain_per_cycle = 0.0100
 
@@ -98,10 +100,10 @@ class AccountWorker:
         try:
             match = re.search(r'id%22%3A(\d+)', raw_data) or re.search(r'"id":(\d+)', raw_data)
             if match:
-                return int(match.group(1))
+                return str(match.group(1))
         except Exception:
             pass
-        return self.chat_id
+        return str(self.chat_id)
 
     def send_req(self, action: str, extra: dict = None):
         url = f"{BASE_URL}?action={action}&t={int(time.time() * 1000)}"
@@ -109,7 +111,7 @@ class AccountWorker:
             "initData": self.init_data,
             "device_id": self.device_id,
             "request_id": str(uuid.uuid4()),
-            "tg_id": self.tg_id
+            "tg_id": str(self.tg_id)
         }
         if extra:
             payload.update(extra)
@@ -156,33 +158,63 @@ class AccountWorker:
         return 8.5
 
     def process_tasks(self):
+        """بدء المهام، انتظارها، ثم جمعها تلقائياً لكل المهام الأربعة"""
         now = int(time.time())
         for task in REPEATABLE_TASKS:
             if self.stop_event.is_set():
                 break
+            
+            # تخطي المهمة إذا كانت في فترة انتظار الساعتين
             if self.task_cooldowns.get(task, 0) > now:
                 continue
-            
-            s = self.send_req("start_task", {"task_id": task, "client_started_at": int(time.time())})
-            dur = int(s.get("task_duration", 15)) if s and s.get("status") == "success" else 15
-            
-            self.last_status = f"⏳ جاري تنفيذ مهمة: {task}"
-            self.update_ui()
-            self.stop_event.wait(dur + 2)
-            
-            c = self.send_req("claim_task", {"task_id": task})
+
+            start_timestamp = self.task_start_times.get(task, now - 30)
+
+            # 1. محاولة الجمع المباشر في حال كانت جاهزة كـ Claim
+            claim_payload = {
+                "task_id": task,
+                "client_started_at": start_timestamp
+            }
+            c = self.send_req("claim_task", claim_payload)
+
             if c and c.get("status") == "success":
-                rew = c.get("reward", 0)
+                rew = c.get("reward", 1)
                 self.completed_tasks += 1
-                self.last_status = f"🎁 تم جمع جائزة مهمة: {task} (+{rew})"
+                self.pool_balance = float(c.get("new_balance", self.pool_balance + rew))
+                self.task_cooldowns[task] = int(c.get("next_available", now + 7200))
+                self.last_status = f"🎁 تم جمع مهمة: {task} (+{rew} ATF)"
                 self.update_ui()
+                self.stop_event.wait(3.0)
+                continue
+
+            # 2. إذا لم تكن مجمّعة، نبدأها (Start Task)
+            started_at = int(time.time())
+            s = self.send_req("start_task", {"task_id": task, "client_started_at": started_at})
+            if s and s.get("status") == "success":
+                self.task_start_times[task] = started_at
+                dur = int(s.get("task_duration", 15))
+                self.last_status = f"⏳ جاري تنفيذ: {task}"
+                self.update_ui()
+                self.stop_event.wait(dur + 2)
+
+                # جمع المكافأة فور اكتمال مدة المهمة
+                claim_res = self.send_req("claim_task", {
+                    "task_id": task,
+                    "client_started_at": started_at
+                })
+                if claim_res and claim_res.get("status") == "success":
+                    rew = claim_res.get("reward", 1)
+                    self.completed_tasks += 1
+                    self.pool_balance = float(claim_res.get("new_balance", self.pool_balance + rew))
+                    self.task_cooldowns[task] = int(claim_res.get("next_available", now + 7200))
+                    self.last_status = f"🎁 تم جمع مهمة: {task} (+{rew} ATF)"
+                    self.update_ui()
+
             self.stop_event.wait(3.0)
 
     def get_estimated_mining_time(self):
-        """حساب الوقت المتبقي لجمع 1 عملة تعدين"""
         if self.pending_reward >= 1.0:
             return "جاهز للجمع الآن! ⏳"
-        
         needed = 1.0 - self.pending_reward
         if self.avg_gain_per_cycle <= 0:
             return "جاري الحساب..."
@@ -202,15 +234,13 @@ class AccountWorker:
             return f"~ {seconds} ثانية"
 
     def get_tasks_cooldown_remaining(self):
-        """حساب الوقت المتبقي حتى تتجدد المهام (كل ساعتين)"""
         now = int(time.time())
         if not self.task_cooldowns:
-            return "جاهزة للتنفيذ الآن! 🎁"
+            return "جاهزة للجمع الآن! 🎁"
 
-        # إيجاد أقرب مهمة ستنتهي فترة انتظارها
         future_cooldowns = [exp for exp in self.task_cooldowns.values() if exp > now]
         if not future_cooldowns:
-            return "جاهزة للتنفيذ الآن! 🎁"
+            return "جاهزة للجمع الآن! 🎁"
 
         nearest_ready = min(future_cooldowns)
         diff = nearest_ready - now
@@ -227,7 +257,7 @@ class AccountWorker:
             return f"~ {seconds} ثانية"
 
     def get_text(self):
-        state = "🟢 شغال تلقائياً" if self.is_running else "🔴 متوقف"
+        state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
         progress = min(100, int((self.pending_reward / 1.0) * 100))
         bars = int(10 * (progress / 100))
         bar = "█" * bars + "░" * (10 - bars)
@@ -252,7 +282,7 @@ class AccountWorker:
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>مرات الجمع:</b> <code>{self.total_claims}</code> | <b>تسريع:</b> <code>{self.total_boosts}</code>\n"
             f"• <b>آخر نشاط:</b> <code>{self.last_status}</code>\n"
-            f"<i>(تتحدث هذه الرسالة تلقائياً مع حركة العدادات)</i>"
+            f"<i>(تتحدث هذه الرسالة تلقائياً كل دورة)</i>"
         )
 
     def get_markup(self):
@@ -283,23 +313,25 @@ class AccountWorker:
         cycle = 0
         while not self.stop_event.is_set():
             try:
-                # 1. تحديث بيانات المستخدم وأوقات انتظار المهام من السيرفر
+                # 1. تحديث بيانات المستخدم وأوقات انتظار المهام
                 login = self.send_req("login")
                 if login and login.get("status") == "success":
                     u = login.get("user", {})
                     self.pool_balance = float(u.get("mined_balance", self.pool_balance))
                     self.miner_level = int(u.get("miner_level", self.miner_level))
-                    self.task_cooldowns = login.get("task_cooldowns", {})
+                    server_cooldowns = login.get("task_cooldowns", {})
+                    if server_cooldowns:
+                        self.task_cooldowns.update(server_cooldowns)
 
-                # 2. تسريع التعدين
+                # 2. تسريع التعدين المستمر
                 cycle_sec = self.boost()
 
                 # 3. جمع التعدين عند الوصول إلى 1.0 عملة أو أكثر
                 if self.pending_reward >= 1.0:
                     self.claim_mining_reward()
 
-                # 4. فحص وتنفيذ المهام إذا انتهى وقت الانتظار
-                if cycle % 8 == 0:
+                # 4. فحص وتنفيذ وجمع المهام الجاهزة كل 6 دورات
+                if cycle % 6 == 0:
                     self.process_tasks()
 
                 self.update_ui()
@@ -325,7 +357,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 3. أوامر التيليجرام
+# 3. أوامر التيليجرام والردود
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -338,8 +370,8 @@ def cmd_start(message):
         waiting_for_token.add(cid)
         bot.send_message(
             cid,
-            "👋 <b>أهلاً بك في بوت ATF التلقائي المتكامل!</b>\n\n"
-            "أرسل سطر الـ <b>initData</b> الخاص بحسابك من اللعبة لبدء التعدين ومتابعة مؤقت المهام:"
+            "👋 <b>أهلاً بك في بوت ATF التلقائي (تعدين + تسريع + جمع مهام)!</b>\n\n"
+            "أرسل سطر الـ <b>initData</b> الخاص بحسابك من اللعبة للبدء فوراً:"
         )
 
 @bot.message_handler(func=lambda msg: msg.chat.id in waiting_for_token)
@@ -361,7 +393,7 @@ def handle_token_input(message):
     sent = bot.send_message(cid, worker.get_text(), reply_markup=worker.get_markup())
     worker.message_id = sent.message_id
     worker.start()
-    bot.send_message(cid, "🚀 تم ربط الحساب بنجاح! تم تشغيل التعدين التلقائي ومؤقت المهام المتجددة.")
+    bot.send_message(cid, "🚀 تم ربط الحساب بنجاح! بدأ التعدين التلقائي وسحب المهام الجاهزة.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_click(call):
