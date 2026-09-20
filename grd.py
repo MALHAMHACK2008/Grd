@@ -5,17 +5,15 @@ import uuid
 import random
 import logging
 import threading
-from urllib.parse import parse_qs, unquote
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import telebot
 from telebot import types
 
-# توكن بوت التيليجرام من Render (Environment Variables)
+# جلب توكن البوت من المتغيرات البيئية أو استخدام الافتراضي
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    # يمكنك وضع التوكن كقيمة افتراضية أيضاً للتجربة
     BOT_TOKEN = "8932223242:AAGLAHEz3mwFlOLkFf39Cx6VatDracRB0Qs"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
@@ -27,7 +25,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-# تخزين العمال النشطين: chat_id -> Worker
 active_workers = {}
 waiting_for_token = set()
 
@@ -35,8 +32,6 @@ class AccountWorker:
     def __init__(self, chat_id, init_data):
         self.chat_id = chat_id
         self.init_data = init_data
-        
-        # استخراج tg_id من الـ init_data تلقائياً
         self.tg_id = self.extract_user_id(init_data)
         self.device_id = f"dev-{uuid.uuid4()}"
         
@@ -49,11 +44,14 @@ class AccountWorker:
         self.miner_level = 0
         self.total_claims = 0
         self.total_boosts = 0
-        self.last_status = "جاهز"
+        self.last_status = "جاهز للبدء"
         self.message_id = None
         self.last_rendered_text = ""
 
-        # إعداد جلسة مستقلة
+        # متغيرات حساب الوقت
+        self.last_cycle_sec = 8.5
+        self.avg_gain_per_cycle = 0.0100  # متوسط الزيادة لكل Boost
+
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
@@ -67,7 +65,6 @@ class AccountWorker:
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
 
     def extract_user_id(self, raw_data):
-        """استخراج آيدي التيليجرام من الـ initData تلقائياً"""
         try:
             match = re.search(r'id%22%3A(\d+)', raw_data) or re.search(r'"id":(\d+)', raw_data)
             if match:
@@ -94,7 +91,7 @@ class AccountWorker:
                     self.session.headers["x-atf-tma-session"] = res["tma_session_token"]
                 return res
         except Exception as e:
-            logging.error(f"خطأ الحساب ({self.chat_id}) عند طلب {action}: {e}")
+            logging.error(f"خطأ ({self.chat_id}) عند طلب {action}: {e}")
         return None
 
     def claim_mining_reward(self):
@@ -105,20 +102,81 @@ class AccountWorker:
             claimed = res.get("claimed_amount", 0)
             self.pool_balance = res.get("new_pool_balance", self.pool_balance + claimed)
             self.pending_reward = 0.0
-            self.last_status = f"✅ تم جمع 1 عملة (+{claimed} ATF)"
+            self.last_status = f"✅ تم جمع 1 عملة بنجاح (+{claimed} ATF)"
             return True
         return False
 
     def boost(self):
+        old_pending = self.pending_reward
         res = self.send_req("activate_boost", {
             "display_preview": round(self.pending_reward + 0.01, 4)
         })
         if res and res.get("status") == "success":
             self.total_boosts += 1
-            self.pending_reward = float(res.get("pending_reward", self.pending_reward))
+            new_pending = float(res.get("pending_reward", self.pending_reward))
+            
+            # حساب معدل الزيادة الفعلي لتحديث دقة الوقت
+            gain = new_pending - old_pending
+            if gain > 0:
+                self.avg_gain_per_cycle = round((self.avg_gain_per_cycle * 0.7) + (gain * 0.3), 5)
+
+            self.pending_reward = new_pending
+            self.last_cycle_sec = max(8.5, float(res.get("boost_cycle_seconds", 8)) + 0.5)
             self.last_status = f"⚡ تسريع نشط (#{self.total_boosts})"
-            return res.get("boost_cycle_seconds", 8)
-        return 8
+            return self.last_cycle_sec
+        return 8.5
+
+    def get_estimated_time_remaining(self):
+        """حساب الوقت المتبقي لجمع 1.0 عملة"""
+        if self.pending_reward >= 1.0:
+            return "حان وقت الجمع الآن! ⏳"
+        
+        needed = 1.0 - self.pending_reward
+        if self.avg_gain_per_cycle <= 0:
+            return "جاري الحساب..."
+
+        cycles_left = needed / self.avg_gain_per_cycle
+        total_seconds = int(cycles_left * self.last_cycle_sec)
+
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+
+        if hours > 0:
+            return f"~ {hours} ساعة و {minutes} دقيقة"
+        elif minutes > 0:
+            return f"~ {minutes} دقيقة و {seconds} ثانية"
+        else:
+            return f"~ {seconds} ثانية"
+
+    def get_text(self):
+        state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
+        progress = min(100, int((self.pending_reward / 1.0) * 100))
+        bars = int(10 * (progress / 100))
+        bar = "█" * bars + "░" * (10 - bars)
+        time_left = self.get_estimated_time_remaining() if self.is_running else "البوت متوقف"
+
+        return (
+            f"<b>🤖 لوحة تحكم التعدين المباشرة (ATF)</b>\n\n"
+            f"• <b>الحالة:</b> {state}\n"
+            f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
+            f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n\n"
+            f"• <b>التقدم نحو 1 عملة:</b>\n"
+            f"<code>[{bar}] {progress}%</code>\n"
+            f"• <b>المعلق حالياً:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n"
+            f"• <b>⏳ الوقت المتبقي للجمع:</b> <code>{time_left}</code>\n\n"
+            f"• <b>مرات الجمع الناجحة:</b> <code>{self.total_claims}</code>\n"
+            f"• <b>مرات التسريع:</b> <code>{self.total_boosts}</code>\n"
+            f"• <b>النشاط الأخير:</b> <code>{self.last_status}</code>\n"
+            f"<i>(هذه الرسالة تتحدث تلقائياً كل دورة)</i>"
+        )
+
+    def get_markup(self):
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
+        btn_claim = types.InlineKeyboardButton("💰 جمع يدوي الآن", callback_data="claim")
+        markup.add(btn_toggle, btn_claim)
+        return markup
 
     def update_ui(self):
         if not self.message_id:
@@ -137,55 +195,23 @@ class AccountWorker:
         except Exception:
             pass
 
-    def get_text(self):
-        state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
-        progress = min(100, int((self.pending_reward / 1.0) * 100))
-        bars = int(10 * (progress / 100))
-        bar = "█" * bars + "░" * (10 - bars)
-
-        return (
-            f"<b>🤖 لوحة تحكم التعدين المباشرة</b>\n\n"
-            f"• <b>الحالة:</b> {state}\n"
-            f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
-            f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n\n"
-            f"• <b>الهدف (جمع عند 1.0 عملة):</b>\n"
-            f"<code>[{bar}] {progress}%</code>\n"
-            f"• <b>المعلق حالياً:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n\n"
-            f"• <b>مرات الجمع:</b> <code>{self.total_claims}</code>\n"
-            f"• <b>مرات التسريع:</b> <code>{self.total_boosts}</code>\n"
-            f"• <b>النشاط الأخير:</b> <code>{self.last_status}</code>\n"
-            f"<i>(هذه الرسالة تتحدث تلقائياً)</i>"
-        )
-
-    def get_markup(self):
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
-        btn_claim = types.InlineKeyboardButton("💰 جمع يدوي", callback_data="claim")
-        markup.add(btn_toggle, btn_claim)
-        return markup
-
     def loop(self):
         while not self.stop_event.is_set():
             try:
-                # فحص الحساب
                 login = self.send_req("login")
                 if login and login.get("status") == "success":
                     u = login.get("user", {})
                     self.pool_balance = float(u.get("mined_balance", self.pool_balance))
                     self.miner_level = int(u.get("miner_level", self.miner_level))
 
-                # تسريع
                 cycle_sec = self.boost()
 
-                # جمع تلقائي عند وصول 1 عملة
+                # جمع تلقائي فور بلوغ 1 عملة أو أكثر
                 if self.pending_reward >= 1.0:
                     self.claim_mining_reward()
 
-                # تحديث لوحة التحكم تلقائياً
                 self.update_ui()
-
-                # التزام بحدود الأمان (8.5 ثوانٍ)
-                self.stop_event.wait(max(8.5, float(cycle_sec) + 0.5))
+                self.stop_event.wait(cycle_sec)
             except Exception as e:
                 logging.error(f"خطأ في حلقة {self.chat_id}: {e}")
                 self.stop_event.wait(5.0)
@@ -206,7 +232,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# أوامر البوت والتعامل مع المستخدمين
+# أوامر البوت
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -219,8 +245,8 @@ def cmd_start(message):
         waiting_for_token.add(cid)
         bot.send_message(
             cid,
-            "👋 <b>أهلاً بك في بوت التعدين والتجميع التلقائي لـ ATF!</b>\n\n"
-            "للبدء، أرسل <b>سطر الـ initData</b> الخاص بحسابك من داخل المتصفح (السطر الذي يبدأ بـ <code>query_id=</code>):"
+            "👋 <b>أهلاً بك في بوت ATF التلقائي!</b>\n\n"
+            "أرسل سطر الـ <b>initData</b> الخاص بحسابك لبدء التعدين:"
         )
 
 @bot.message_handler(func=lambda msg: msg.chat.id in waiting_for_token)
@@ -228,24 +254,21 @@ def handle_token_input(message):
     cid = message.chat.id
     raw_text = message.text.strip()
 
-    # تنظيف النص إذا أرسل رابط كامل
     if "#tgWebAppData=" in raw_text:
         raw_text = raw_text.split("#tgWebAppData=")[1].split("&")[0]
 
     if "query_id=" not in raw_text and "user=" not in raw_text:
-        bot.send_message(cid, "❌ هذا السطر غير صالح. تأكد من نسخ سطر الـ <b>initData</b> كاملاً وأرسله مجدداً:")
+        bot.send_message(cid, "❌ هذا السطر غير صحيح، يرجى إرسال الـ initData كاملاً:")
         return
 
     waiting_for_token.remove(cid)
-    
-    # إنشاء عامل مخصص لهذا الشخص
     worker = AccountWorker(chat_id=cid, init_data=raw_text)
     active_workers[cid] = worker
 
     sent = bot.send_message(cid, worker.get_text(), reply_markup=worker.get_markup())
     worker.message_id = sent.message_id
     worker.start()
-    bot.send_message(cid, "✅ تم ربط حسابك وتشغيل التعدين والتجميع التلقائي بنجاح!")
+    bot.send_message(cid, "🚀 تم تفعيل الحساب وحساب موعد الجمع التلقائي بنجاح!")
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_click(call):
