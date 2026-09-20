@@ -5,13 +5,32 @@ import uuid
 import random
 import logging
 import threading
+from flask import Flask
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import telebot
 from telebot import types
 
-# جلب توكن البوت من المتغيرات البيئية أو استخدام الافتراضي
+# ----------------------------------------------------
+# 0. حل مشكلة Port لـ Render (Dummy Web Server)
+# ----------------------------------------------------
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "ATF Bot is running smoothly on Render!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
+
+# تشغيل خادم الويب بخيط منفصل لإسكات فحص البورت في Render
+threading.Thread(target=run_flask, daemon=True).start()
+
+# ----------------------------------------------------
+# 1. إعدادات التيليجرام والمنصة
+# ----------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     BOT_TOKEN = "8932223242:AAGLAHEz3mwFlOLkFf39Cx6VatDracRB0Qs"
@@ -28,6 +47,9 @@ logging.basicConfig(
 active_workers = {}
 waiting_for_token = set()
 
+# ----------------------------------------------------
+# 2. محرك التعدين لكل مستخدم
+# ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id, init_data):
         self.chat_id = chat_id
@@ -50,7 +72,7 @@ class AccountWorker:
 
         # متغيرات حساب الوقت
         self.last_cycle_sec = 8.5
-        self.avg_gain_per_cycle = 0.0100  # متوسط الزيادة لكل Boost
+        self.avg_gain_per_cycle = 0.0100
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -102,7 +124,7 @@ class AccountWorker:
             claimed = res.get("claimed_amount", 0)
             self.pool_balance = res.get("new_pool_balance", self.pool_balance + claimed)
             self.pending_reward = 0.0
-            self.last_status = f"✅ تم جمع 1 عملة بنجاح (+{claimed} ATF)"
+            self.last_status = f"✅ تم جمع 1 عملة (+{claimed} ATF)"
             return True
         return False
 
@@ -115,7 +137,6 @@ class AccountWorker:
             self.total_boosts += 1
             new_pending = float(res.get("pending_reward", self.pending_reward))
             
-            # حساب معدل الزيادة الفعلي لتحديث دقة الوقت
             gain = new_pending - old_pending
             if gain > 0:
                 self.avg_gain_per_cycle = round((self.avg_gain_per_cycle * 0.7) + (gain * 0.3), 5)
@@ -127,7 +148,6 @@ class AccountWorker:
         return 8.5
 
     def get_estimated_time_remaining(self):
-        """حساب الوقت المتبقي لجمع 1.0 عملة"""
         if self.pending_reward >= 1.0:
             return "حان وقت الجمع الآن! ⏳"
         
@@ -168,7 +188,7 @@ class AccountWorker:
             f"• <b>مرات الجمع الناجحة:</b> <code>{self.total_claims}</code>\n"
             f"• <b>مرات التسريع:</b> <code>{self.total_boosts}</code>\n"
             f"• <b>النشاط الأخير:</b> <code>{self.last_status}</code>\n"
-            f"<i>(هذه الرسالة تتحدث تلقائياً كل دورة)</i>"
+            f"<i>(هذه الرسالة تتحدث تلقائياً)</i>"
         )
 
     def get_markup(self):
@@ -206,7 +226,6 @@ class AccountWorker:
 
                 cycle_sec = self.boost()
 
-                # جمع تلقائي فور بلوغ 1 عملة أو أكثر
                 if self.pending_reward >= 1.0:
                     self.claim_mining_reward()
 
@@ -232,7 +251,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# أوامر البوت
+# 3. توجيهات وأوامر التيليجرام
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -246,7 +265,7 @@ def cmd_start(message):
         bot.send_message(
             cid,
             "👋 <b>أهلاً بك في بوت ATF التلقائي!</b>\n\n"
-            "أرسل سطر الـ <b>initData</b> الخاص بحسابك لبدء التعدين:"
+            "أرسل سطر الـ <b>initData</b> الخاص بحسابك المستخرج من اللعبة لبدء التعدين فوراً:"
         )
 
 @bot.message_handler(func=lambda msg: msg.chat.id in waiting_for_token)
@@ -258,7 +277,7 @@ def handle_token_input(message):
         raw_text = raw_text.split("#tgWebAppData=")[1].split("&")[0]
 
     if "query_id=" not in raw_text and "user=" not in raw_text:
-        bot.send_message(cid, "❌ هذا السطر غير صحيح، يرجى إرسال الـ initData كاملاً:")
+        bot.send_message(cid, "❌ هذا السطر غير صحيح، تأكد من نسخه كاملاً وأرسله مرة أخرى:")
         return
 
     waiting_for_token.remove(cid)
@@ -268,7 +287,7 @@ def handle_token_input(message):
     sent = bot.send_message(cid, worker.get_text(), reply_markup=worker.get_markup())
     worker.message_id = sent.message_id
     worker.start()
-    bot.send_message(cid, "🚀 تم تفعيل الحساب وحساب موعد الجمع التلقائي بنجاح!")
+    bot.send_message(cid, "🚀 تم ربط الحساب وبدء التعدين والتجميع التلقائي بنجاح!")
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_click(call):
