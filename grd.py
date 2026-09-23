@@ -13,6 +13,7 @@ from requests.adapters import HTTPAdapter
 import telebot
 from telebot import types
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
 
 # ----------------------------------------------------
@@ -31,16 +32,17 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات التيليجرام
+# 1. إعدادات التيليجرام والجلسة النصية
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SESSION_PATH = os.path.join(BASE_DIR, "malham_session")
-if os.path.exists(os.path.join(BASE_DIR, "malham_session.session.session")):
-    SESSION_PATH = os.path.join(BASE_DIR, "malham_session.session")
+# كود الجلسة النصي المستخرج من حسابك
+STRING_SESSION = os.environ.get(
+    "STRING_SESSION",
+    "1BJWap1wBu75aRV8dKyTomYxlTJiCyBZ-QSA_ttAgtplZ6g1OVBmtnWzYJ32uVMADYOD9HYw8XrZsbryA26qjcwQmSMSOgtTKK1HzA3FiNkEpmRTKuoYQF2iTNmwUpBOOOAqbUv3URy3VAIAYFEOh6TiqdJLws8dSbvmX73hH_s7qBVB_OrPw57JmjaZr6X4dfKFDIiZz-ARIuHOzts6xoacy-9eewjMBW5L8keUTQ8PfHqO6f1DescExyPNMW54EfOVDktwCY8wGkkt8DVrRgXj6mE-kYmGgK_Tv9V69Bn_LuVjWsROi0cfTtzABDistDyNZVWeRqJhyXzhZqhpqT98YxT5hbnU="
+)
 
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 DEFAULT_APP_URL = "https://atfminers.asloni.online/miner/index.html"
@@ -65,17 +67,17 @@ waiting_bot_username = set()
 waiting_manual_token = set()
 
 # ----------------------------------------------------
-# 2. استخراج التوكن عبر الجلسة لأي يوزر بوت
+# 2. استخراج التوكن عبر الجلسة النصية
 # ----------------------------------------------------
 def fetch_token_from_target_bot(target_bot_username, app_url=DEFAULT_APP_URL):
     target_clean = target_bot_username.replace("@", "").strip()
     
     async def _async_fetch():
-        client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+        client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
-            return None, "ملف الجلسة غير مسجل الدخول أو غير مصرح"
+            return None, "الجلسة النصية غير مصرحة أو منتهية الصلاحية"
 
         try:
             bot_entity = await client.get_input_entity(target_clean)
@@ -128,7 +130,7 @@ class AccountWorker:
         self.total_team_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
-        self.last_status = "بانتظار تفعيل التوكن..."
+        self.last_status = "جاري الاتصال والتشغيل..."
         self.message_id = None
         self.last_rendered_text = ""
         self.last_token_time = 0
@@ -164,7 +166,7 @@ class AccountWorker:
             if token:
                 self.update_headers(token)
                 self.last_token_time = time.time()
-                self.last_status = "🔄 تم تجديد التوكن تلقائياً"
+                self.last_status = "🔄 تم سحب التوكن تلقائياً"
                 return True
             else:
                 if not self.init_data:
@@ -443,7 +445,7 @@ def handle_target_bot(message):
     w = active_workers.get(cid)
     if w:
         w.target_bot = target
-        bot.send_message(cid, f"⏳ جاري الاتصال بحسابك عبر ملف الجلسة وفتح بوت <code>@{target}</code> لاستخراج التوكن...")
+        bot.send_message(cid, f"⏳ جاري الاتصال بحسابك عبر الجلسة النصية وسحب توكن <code>@{target}</code>...")
         token, status_msg = fetch_token_from_target_bot(target)
         if token:
             w.update_headers(token)
@@ -478,7 +480,7 @@ def handle_manual_token(message):
         bot.send_message(cid, "✅ تم تفعيل التوكن بنجاح! التعدين يعمل الآن.")
 
 # ----------------------------------------------------
-# 5. تشغيل البوت مع تجاوز تعارض الـ Conflict 409
+# 5. تشغيل البوت وتفادي التعارض
 # ----------------------------------------------------
 if __name__ == "__main__":
     try:
