@@ -26,7 +26,7 @@ threading.Thread(target=run_web, daemon=True).start()
 # ----------------------------------------------------
 # 1. إعدادات التيليجرام والـ API
 # ----------------------------------------------------
-BOT_TOKEN = "8808422049:AAETrng6DwoxDSw5459fRyhFFecKUz6JBo4"
+BOT_TOKEN = "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc"
 MONKEY_HEARTBEAT_URL = "https://monkeybase.hellgems.com/api/admonkey/earn/heartbeat"
 ATF_CLAIM_URL = "https://atfminers.asloni.online/miner/index.php"
 PAYLOAD = {"mode": "turbo"}
