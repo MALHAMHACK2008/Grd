@@ -16,7 +16,7 @@ from telethon import TelegramClient
 from telethon.tl.functions.messages import RequestWebViewRequest
 
 # ----------------------------------------------------
-# 0. خادم ويب لإبقاء السيرفر نشطاً على Render
+# 0. خادم ويب لإبقاء السيرفر نشطاً على Render 24/7
 # ----------------------------------------------------
 web_app = Flask(__name__)
 
@@ -35,9 +35,9 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# مسار ملف الجلسة مع التعامل مع امتداد .session تلقائياً
 SESSION_PATH = os.path.join(BASE_DIR, "malham_session")
 if os.path.exists(os.path.join(BASE_DIR, "malham_session.session.session")):
     SESSION_PATH = os.path.join(BASE_DIR, "malham_session.session")
@@ -65,7 +65,7 @@ waiting_bot_username = set()
 waiting_manual_token = set()
 
 # ----------------------------------------------------
-# 2. دالة استخراج التوكن عبر الجلسة لأي يوزر بوت
+# 2. استخراج التوكن عبر الجلسة لأي يوزر بوت
 # ----------------------------------------------------
 def fetch_token_from_target_bot(target_bot_username, app_url=DEFAULT_APP_URL):
     target_clean = target_bot_username.replace("@", "").strip()
@@ -75,7 +75,7 @@ def fetch_token_from_target_bot(target_bot_username, app_url=DEFAULT_APP_URL):
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
-            return None, "ملف الجلسة غير مسجل الدخول أو غير متاح"
+            return None, "ملف الجلسة غير مسجل الدخول أو غير مصرح"
 
         try:
             bot_entity = await client.get_input_entity(target_clean)
@@ -92,7 +92,7 @@ def fetch_token_from_target_bot(target_bot_username, app_url=DEFAULT_APP_URL):
                 await client.disconnect()
                 return clean_init, "تم السحب بنجاح"
             await client.disconnect()
-            return None, "الرابط المستلم لا يحتوي بيانات WebApp"
+            return None, "الرابط المستلم لا يحتوي tgWebAppData"
         except Exception as e:
             await client.disconnect()
             return None, f"خطأ Telethon: {str(e)}"
@@ -477,9 +477,18 @@ def handle_manual_token(message):
         w.update_ui()
         bot.send_message(cid, "✅ تم تفعيل التوكن بنجاح! التعدين يعمل الآن.")
 
+# ----------------------------------------------------
+# 5. تشغيل البوت مع تجاوز تعارض الـ Conflict 409
+# ----------------------------------------------------
 if __name__ == "__main__":
+    try:
+        bot.remove_webhook()
+    except Exception:
+        pass
+
     while True:
         try:
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
-        except Exception:
-            time.sleep(3)
+            bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
+        except Exception as e:
+            logging.error(f"Polling exception: {e}")
+            time.sleep(5)
