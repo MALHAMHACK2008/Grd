@@ -2,7 +2,6 @@ import os
 import re
 import time
 import uuid
-import random
 import logging
 import asyncio
 import threading
@@ -23,7 +22,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Engine with Auto-Token-Fetch is Running 24/7!"
+    return "ATF Engine is Running 24/7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -32,20 +31,25 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات حساب التيليجرام والبوت
+# 1. إعدادات التيليجرام والمنصة
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
 
-# المسار الدقيق لملف الجلسة ليقرأه السيرفر أينما كان مسار التشغيل
+# توكن البوت الجديد
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc")
+
+# مسار ملف الجلسة مع مراعاة اسم الملف
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SESSION_FILE = os.path.join(BASE_DIR, "malham_session")
+# إذا كان الملف مرفوعاً باسم malham_session.session نمرر الاسم بدون .session لأن Telethon يضيفها تلقائياً
+SESSION_PATH = os.path.join(BASE_DIR, "malham_session")
+if os.path.exists(os.path.join(BASE_DIR, "malham_session.session.session")):
+    SESSION_PATH = os.path.join(BASE_DIR, "malham_session.session")
 
 ATF_BOT_USERNAME = "atfminers_bot"
 ATF_APP_URL = "https://atfminers.asloni.online/miner/index.html"
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc")
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 REPEATABLE_TASKS = [
@@ -62,16 +66,17 @@ logging.basicConfig(
 )
 
 active_workers = {}
+waiting_manual_token = set()
 
 # ----------------------------------------------------
-# 2. جلب التوكن تلقائياً من تطبيق تيليجرام
+# 2. محاولة جلب التوكن تلقائياً
 # ----------------------------------------------------
 def fetch_token_from_tg():
     async def _async_fetch():
-        client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+        client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
         await client.connect()
         if not await client.is_user_authorized():
-            logging.error("حساب تيليجرام غير مسجل الدخول أو ملف الجلسة غير صالح.")
+            logging.error("الجلسة غير مصرحة أو غير مسجلة.")
             await client.disconnect()
             return None
         
@@ -90,7 +95,7 @@ def fetch_token_from_tg():
                 await client.disconnect()
                 return clean_init
         except Exception as e:
-            logging.error(f"خطأ أثناء استخراج التوكن عبر Telethon: {e}")
+            logging.error(f"خطأ RequestWebViewRequest: {e}")
         
         await client.disconnect()
         return None
@@ -102,11 +107,11 @@ def fetch_token_from_tg():
         loop.close()
         return token
     except Exception as e:
-        logging.error(f"خطأ Event Loop: {e}")
+        logging.error(f"خطأ Loop: {e}")
         return None
 
 # ----------------------------------------------------
-# 3. محرك التعدين والمهام
+# 3. محرك الحساب
 # ----------------------------------------------------
 class AccountWorker:
     def __init__(self, chat_id):
@@ -127,7 +132,7 @@ class AccountWorker:
         self.total_team_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
-        self.last_status = "جاري الاتصال بملف الجلسة وجلب التوكن..."
+        self.last_status = "جاري الفحص..."
         self.message_id = None
         self.last_rendered_text = ""
         self.last_token_time = 0
@@ -162,11 +167,12 @@ class AccountWorker:
             if token:
                 self.update_headers(token)
                 self.last_token_time = time.time()
-                self.last_status = "🔄 تم جلب وتجديد التوكن بنجاح"
+                self.last_status = "🔄 تم جلب التوكن تلقائياً"
                 return True
             else:
-                self.last_status = "⚠️ تعذر جلب التوكن (تأكد من ملف malham_session.session)"
-                return False
+                if not self.init_data:
+                    self.last_status = "⚠️ تعذر السحب التلقائي (اضغط إدخال توكن يدوي)"
+                    return False
         return True
 
     def send_req(self, action: str, extra: dict = None):
@@ -229,7 +235,6 @@ class AccountWorker:
         if res and res.get("status") == "success":
             self.total_boosts += 1
             new_pending = float(res.get("pending_reward", self.pending_reward))
-            
             gain = new_pending - old_pending
             if gain > 0:
                 self.avg_gain_per_cycle = round((self.avg_gain_per_cycle * 0.7) + (gain * 0.3), 5)
@@ -301,7 +306,7 @@ class AccountWorker:
             f"• <b>جمع التعدين:</b> <code>{self.total_claims}</code> | <b>سحب الفريق:</b> <code>{self.total_team_claims}</code>\n"
             f"• <b>مرات التسريع:</b> <code>{self.total_boosts}</code>\n"
             f"• <b>آخر نشاط:</b> <code>{self.last_status}</code>\n"
-            f"<i>(التوكن يتجدد ذاتياً كل ساعتين ونصف 🔄)</i>"
+            f"<i>(يعمل التعدين والمهام وسحب الفريق 24/7)</i>"
         )
 
     def get_markup(self):
@@ -309,8 +314,10 @@ class AccountWorker:
         btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
         btn_claim = types.InlineKeyboardButton("💰 جمع يدوي", callback_data="claim")
         btn_claim_team = types.InlineKeyboardButton("💸 سحب الفريق الآن", callback_data="claim_team")
+        btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
         markup.add(btn_toggle, btn_claim)
         markup.add(btn_claim_team)
+        markup.add(btn_manual)
         return markup
 
     def update_ui(self):
@@ -331,7 +338,7 @@ class AccountWorker:
             try:
                 if not self.refresh_token_if_needed():
                     self.update_ui()
-                    self.stop_event.wait(20.0)
+                    self.stop_event.wait(15.0)
                     continue
 
                 login = self.send_req("login")
@@ -380,7 +387,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر البوت
+# 4. أوامر البوت والتفاعل
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -417,8 +424,33 @@ def on_click(call):
     elif call.data == "claim_team":
         w.claim_team_wallet()
         bot.answer_callback_query(call.id, "جاري طلب سحب محفظة الفريق 💸")
+    elif call.data == "manual_token":
+        waiting_manual_token.add(cid)
+        bot.send_message(cid, "أرسل رابط اللعبة كاملاً أو سطر الـ <b>initData</b> هنا:")
+        bot.answer_callback_query(call.id, "بانتظار إرسال التوكن...")
 
     w.update_ui()
+
+@bot.message_handler(func=lambda msg: msg.chat.id in waiting_manual_token)
+def handle_manual_token(message):
+    cid = message.chat.id
+    raw_text = message.text.strip()
+
+    if "#tgWebAppData=" in raw_text:
+        raw_text = urllib.parse.unquote(raw_text.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0])
+
+    if "query_id=" not in raw_text and "user=" not in raw_text:
+        bot.send_message(cid, "❌ سطر غير صالح. أرسل الرابط كاملاً أو التوكن الصحيح:")
+        return
+
+    waiting_manual_token.remove(cid)
+    w = active_workers.get(cid)
+    if w:
+        w.update_headers(raw_text)
+        w.last_status = "⚡ تم تعيين التوكن يدوياً وبدأ العمل"
+        w.last_token_time = time.time()
+        w.update_ui()
+        bot.send_message(cid, "✅ تم تفعيل التوكن بنجاح! التعدين يعمل الآن.")
 
 if __name__ == "__main__":
     while True:
