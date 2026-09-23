@@ -15,12 +15,7 @@ from telebot import types
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
-from telethon.errors import (
-    SessionPasswordNeededError,
-    PhoneCodeInvalidError,
-    PhoneCodeExpiredError,
-    FloodWaitError
-)
+from telethon.errors import SessionPasswordNeededError
 
 # ----------------------------------------------------
 # 0. خادم ويب لإبقاء السيرفر نشطاً على Render
@@ -29,7 +24,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "ATF Engine with Interactive Telegram Auth is Running 24/7!"
+    return "ATF Engine with Full Automation is Running 24/7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -62,14 +57,13 @@ logging.basicConfig(
 )
 
 active_workers = {}
-
-# حالات التسجيل المؤقتة للمستخدمين
+active_auth_clients = {}
 user_login_flows = {}
 waiting_manual_token = set()
 waiting_target_bot = set()
 
 # ----------------------------------------------------
-# 2. إدارة جلسات Telethon (تسجيل الدخول وسحب التوكن)
+# 2. إدارة جلسات Telethon (حل مشكلة انتهاء صلاحية الكود)
 # ----------------------------------------------------
 class TelethonManager:
     @staticmethod
@@ -82,21 +76,27 @@ class TelethonManager:
             loop.close()
 
     @classmethod
-    def send_code(cls, phone_number):
+    def send_code(cls, cid, phone_number):
         async def _send():
+            if cid in active_auth_clients:
+                try:
+                    await active_auth_clients[cid].disconnect()
+                except Exception:
+                    pass
+
             client = TelegramClient(StringSession(), API_ID, API_HASH)
             await asyncio.wait_for(client.connect(), timeout=15.0)
             res = await asyncio.wait_for(client.send_code_request(phone_number), timeout=15.0)
-            session_str = client.session.save()
-            await client.disconnect()
-            return session_str, res.phone_code_hash
+            active_auth_clients[cid] = client
+            return res.phone_code_hash
         return cls.run_coro(_send())
 
     @classmethod
-    def sign_in(cls, session_str, phone, phone_code_hash, code):
+    def sign_in(cls, cid, phone, phone_code_hash, code):
         async def _sign():
-            client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
-            await asyncio.wait_for(client.connect(), timeout=15.0)
+            client = active_auth_clients.get(cid)
+            if not client or not client.is_connected():
+                return "EXPIRED_SESSION", "انقطع الاتصال بالسيرفر، يرجى طلب الرمز مجدداً"
             try:
                 await asyncio.wait_for(
                     client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash),
@@ -104,27 +104,35 @@ class TelethonManager:
                 )
                 final_session = client.session.save()
                 await client.disconnect()
+                if cid in active_auth_clients:
+                    del active_auth_clients[cid]
                 return "SUCCESS", final_session
             except SessionPasswordNeededError:
-                await client.disconnect()
-                return "2FA_REQUIRED", session_str
+                return "2FA_REQUIRED", ""
             except Exception as e:
                 await client.disconnect()
+                if cid in active_auth_clients:
+                    del active_auth_clients[cid]
                 return "ERROR", str(e)
         return cls.run_coro(_sign())
 
     @classmethod
-    def sign_in_password(cls, session_str, password):
+    def sign_in_password(cls, cid, password):
         async def _sign_2fa():
-            client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
-            await asyncio.wait_for(client.connect(), timeout=15.0)
+            client = active_auth_clients.get(cid)
+            if not client or not client.is_connected():
+                return "EXPIRED_SESSION", "انقطع الاتصال بالسيرفر، يرجى البدء من جديد"
             try:
                 await asyncio.wait_for(client.sign_in(password=password), timeout=15.0)
                 final_session = client.session.save()
                 await client.disconnect()
+                if cid in active_auth_clients:
+                    del active_auth_clients[cid]
                 return "SUCCESS", final_session
             except Exception as e:
                 await client.disconnect()
+                if cid in active_auth_clients:
+                    del active_auth_clients[cid]
                 return "ERROR", str(e)
         return cls.run_coro(_sign_2fa())
 
@@ -156,13 +164,7 @@ class TelethonManager:
                 if "#tgWebAppData=" in raw_url:
                     raw_init = raw_url.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0]
                     return urllib.parse.unquote(raw_init), "تم السحب بنجاح"
-                return None, "الرابط لا يحتوي على بيانات initData"
-            except asyncio.TimeoutError:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
-                return None, "انتهت مهلة استجابة تيليجرام"
+                return None, "الرابط لا يحتوي initData"
             except Exception as e:
                 try:
                     await client.disconnect()
@@ -240,7 +242,7 @@ class AccountWorker:
         if token:
             self.update_headers(token)
             self.last_token_time = time.time()
-            self.last_status = "🔄 تم سحب التوكن تلقائياً وبدأ التعدين"
+            self.last_status = "🔄 تم سحب التوكن وبدأ التعدين"
             return True
         else:
             self.last_status = f"⚠️ {msg}"
@@ -530,7 +532,7 @@ def handle_all_messages(message):
         w = AccountWorker(chat_id=cid)
         active_workers[cid] = w
 
-    # 1. إدخال التوكن اليدوي
+    # إدخال التوكن اليدوي
     if cid in waiting_manual_token:
         waiting_manual_token.remove(cid)
         raw_text = text
@@ -548,7 +550,7 @@ def handle_all_messages(message):
         bot.send_message(cid, "✅ تم تعيين التوكن بنجاح! بدأ العمل.")
         return
 
-    # 2. تحديد يوزر البوت وسحب التوكن
+    # تحديد يوزر البوت وسحب التوكن
     if cid in waiting_target_bot:
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
@@ -560,7 +562,7 @@ def handle_all_messages(message):
         w.update_ui()
         return
 
-    # 3. خطوات تسجيل الدخول التفاعلية (رقم -> كود -> 2FA)
+    # خطوات تسجيل الدخول التفاعلية (رقم -> كود -> 2FA)
     if cid in user_login_flows:
         flow = user_login_flows[cid]
         step = flow.get("step")
@@ -569,14 +571,13 @@ def handle_all_messages(message):
             phone = text.replace(" ", "")
             bot.send_message(cid, f"⏳ جاري طلب رمز التحقق للرقم <code>{phone}</code>...")
             try:
-                session_str, phone_code_hash = TelethonManager.send_code(phone)
+                phone_code_hash = TelethonManager.send_code(cid, phone)
                 user_login_flows[cid] = {
                     "step": "WAIT_CODE",
                     "phone": phone,
-                    "phone_code_hash": phone_code_hash,
-                    "session_str": session_str
+                    "phone_code_hash": phone_code_hash
                 }
-                bot.send_message(cid, "📩 <b>وصلك رمز التيليجرام!</b>\nأرسل الكود هنا (إذا كان مكوّناً من 5 أرقام أرسله مباشرة):")
+                bot.send_message(cid, "📩 <b>وصلك رمز التيليجرام!</b>\nأرسل الكود هنا:")
             except Exception as e:
                 bot.send_message(cid, f"❌ فشل إرسال الرمز: {e}")
                 del user_login_flows[cid]
@@ -586,21 +587,19 @@ def handle_all_messages(message):
             code = text.replace(" ", "").strip()
             phone = flow["phone"]
             phone_code_hash = flow["phone_code_hash"]
-            session_str = flow["session_str"]
 
             bot.send_message(cid, "⏳ جاري التحقق من الكود...")
-            status, result = TelethonManager.sign_in(session_str, phone, phone_code_hash, code)
+            status, result = TelethonManager.sign_in(cid, phone, phone_code_hash, code)
 
             if status == "SUCCESS":
                 w.string_session = result
                 del user_login_flows[cid]
-                bot.send_message(cid, "🎉 <b>تم تسجيل الدخول بنجاح وحفظ الجلسة!</b>\nجاري سحب توكن اللعبة الآن...")
+                bot.send_message(cid, "🎉 <b>تم تسجيل الدخول بنجاح!</b>\nجاري سحب التوكن والبدء في التعدين...")
                 w.auto_pull_token()
                 w.update_ui()
             elif status == "2FA_REQUIRED":
                 user_login_flows[cid]["step"] = "WAIT_PASSWORD"
-                user_login_flows[cid]["session_str"] = result
-                bot.send_message(cid, "🔐 <b>حسابك محمي بكلمة سر التحقق بخطوتين (2FA):</b>\nأرسل كلمة السر الخاصة بحسابك الآن:")
+                bot.send_message(cid, "🔐 <b>حسابك محمي بالتحقق بخطوتين (2FA):</b>\nأرسل كلمة السر الخاصة بحسابك الآن:")
             else:
                 bot.send_message(cid, f"❌ فشل تسجيل الدخول: {result}")
                 del user_login_flows[cid]
@@ -608,14 +607,13 @@ def handle_all_messages(message):
 
         elif step == "WAIT_PASSWORD":
             password = text.strip()
-            session_str = flow["session_str"]
             bot.send_message(cid, "⏳ جاري التحقق من كلمة السر...")
-            status, result = TelethonManager.sign_in_password(session_str, password)
+            status, result = TelethonManager.sign_in_password(cid, password)
 
             if status == "SUCCESS":
                 w.string_session = result
                 del user_login_flows[cid]
-                bot.send_message(cid, "🎉 <b>تم تأكيد كلمة السر وحفظ الجلسة بنجاح!</b>\nجاري سحب التوكن...")
+                bot.send_message(cid, "🎉 <b>تم تأكيد كلمة السر وحفظ الجلسة!</b>\nجاري سحب التوكن...")
                 w.auto_pull_token()
                 w.update_ui()
             else:
