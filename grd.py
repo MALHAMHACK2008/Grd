@@ -36,7 +36,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGbsCURW1NBWElJGZTMJxCI0EUQxAWKqE4")
 
 # كود الجلسة النصي المستخرج من حسابك
 STRING_SESSION = os.environ.get(
