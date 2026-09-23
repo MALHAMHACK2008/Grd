@@ -1,182 +1,426 @@
 import os
-import threading
+import re
 import time
-import urllib.parse
 import uuid
+import random
+import logging
+import asyncio
+import threading
+import urllib.parse
 from flask import Flask
 import requests
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 import telebot
 from telebot import types
+from telethon import TelegramClient
+from telethon.tl.functions.messages import RequestWebViewRequest
 
 # ----------------------------------------------------
-# 0. سيرفر الويب المخصص لـ Render لتفادي توقف الخدمة
+# 0. خادم ويب مصغر لإبقاء السيرفر نشطاً على Render
 # ----------------------------------------------------
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is Running 24/7 on Render!"
+    return "ATF Engine with Auto-Token-Fetch is Running 24/7!"
 
-def run_web():
+def run_flask():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_web, daemon=True).start()
+threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات التيليجرام والـ API
+# 1. إعدادات حساب التيليجرام والبوت
 # ----------------------------------------------------
-BOT_TOKEN = "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc"
-MONKEY_HEARTBEAT_URL = "https://monkeybase.hellgems.com/api/admonkey/earn/heartbeat"
-ATF_CLAIM_URL = "https://atfminers.asloni.online/miner/index.php"
-PAYLOAD = {"mode": "turbo"}
+API_ID = 36791169
+API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
+SESSION_NAME = "malham_session"
 
-bot = telebot.TeleBot(BOT_TOKEN)
-users_mining = {}
+ATF_BOT_USERNAME = "atfminers_bot"
+ATF_APP_URL = "https://atfminers.asloni.online/miner/index.html"
+BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 
-# ----------------------------------------------------
-# 2. دالة تنفيذ السحب التلقائي لمحفظة الفريق
-# ----------------------------------------------------
-def execute_atf_claim(token, tg_id):
-    current_time_ms = int(time.time() * 1000)
-    request_id = str(uuid.uuid4())
-    params = {"action": "claim_team_wallet", "t": str(current_time_ms)}
-    headers = {
-        "authority": "atfminers.asloni.online",
-        "accept": "*/*",
-        "accept-language": "ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7",
-        "content-type": "application/json",
-        "origin": "https://atfminers.asloni.online",
-        "referer": "https://atfminers.asloni.online/miner/index.html?v=1788012819",
-        "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-        "x-requested-with": "XMLHttpRequest",
-        "x-telegram-init-data": token
-    }
-    payload = {
-        "initData": token,
-        "request_id": request_id,
-        "device_id": f"dev-{request_id[:18]}",
-        "tg_id": str(tg_id)
-    }
-    try:
-        r = requests.post(ATF_CLAIM_URL, params=params, headers=headers, json=payload, timeout=12)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("status") == "success" or data.get("ok") is True:
-                return True, data
-            return False, data
-        return False, f"HTTP Error {r.status_code}"
-    except Exception as e:
-        return False, str(e)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGuSuqezywQYlg-cQ-0hj2rMdEiCCta9mc")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+REPEATABLE_TASKS = [
+    "youtube_like_comment",
+    "twitter_retweet",
+    "website_visit",
+    "telegram_react_latest"
+]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s]: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+active_workers = {}
 
 # ----------------------------------------------------
-# 3. محرك التعدين ومراقبة الرصيد
+# 2. جلب التوكن تلقائياً من تطبيق تيليجرام
 # ----------------------------------------------------
-def mining_thread(user_id):
-    while users_mining.get(user_id, {}).get("active", False):
-        token = users_mining[user_id]["token"]
-        headers = {
-            "Host": "monkeybase.hellgems.com",
-            "accept": "*/*",
-            "content-type": "application/json",
-            "user-agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-            "x-telegram-init-data": token,
-            "origin": "https://monkey.hellgems.com",
-            "referer": "https://monkey.hellgems.com/",
-        }
+def fetch_token_from_tg():
+    async def _async_fetch():
+        client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+        await client.connect()
+        if not await client.is_user_authorized():
+            logging.error("حساب تيليجرام غير مسجل الدخول. يلزم تجهيز ملف الجلسة session.")
+            await client.disconnect()
+            return None
+        
         try:
-            res = requests.post(MONKEY_HEARTBEAT_URL, headers=headers, json=PAYLOAD, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                users_mining[user_id]["rate"] = data.get("ratePerHour", 0)
-                user_data = data.get("current", {}).get("user", {})
-                current_usdt = float(user_data.get("usdtBalance", 0.0))
-                users_mining[user_id]["usdt"] = current_usdt
-                users_mining[user_id]["hits"] += 1
-                users_mining[user_id]["status"] = "شغال بنمط Turbo ⚡"
-
-                # فحص شرط السحب عند 0.5
-                if current_usdt >= 0.5:
-                    success, claim_resp = execute_atf_claim(token, user_id)
-                    if success:
-                        bot.send_message(
-                            user_id,
-                            f"🎉 تم السحب التلقائي بنجاح!\nالرصيد: {current_usdt} USDT\nالرد: {claim_resp}"
-                        )
-            elif res.status_code == 401:
-                users_mining[user_id]["status"] = "انتهت صلاحية التوكن"
-                users_mining[user_id]["active"] = False
-                bot.send_message(user_id, "⚠️ انتهت صلاحية التوكن، أرسل توكناً جديداً للاستمرار.")
-                break
-            else:
-                users_mining[user_id]["status"] = f"خطأ سيرفر {res.status_code}"
+            bot_entity = await client.get_input_entity(ATF_BOT_USERNAME)
+            web_view = await client(RequestWebViewRequest(
+                peer=bot_entity,
+                bot=bot_entity,
+                platform="android",
+                url=ATF_APP_URL
+            ))
+            raw_url = web_view.url
+            if "#tgWebAppData=" in raw_url:
+                raw_init = raw_url.split("#tgWebAppData=")[1].split("&tgWebAppVersion=")[0].split("&")[0]
+                clean_init = urllib.parse.unquote(raw_init)
+                await client.disconnect()
+                return clean_init
         except Exception as e:
-            users_mining[user_id]["status"] = f"خطأ: {e}"
-        time.sleep(1.5)
+            logging.error(f"خطأ أثناء استخراج التوكن عبر Telethon: {e}")
+        
+        await client.disconnect()
+        return None
 
-def get_menu():
-    kb = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    kb.add(types.KeyboardButton("▶️ بدء التعدين والسحب"), types.KeyboardButton("⏹️ إيقاف التعدين"))
-    kb.add(types.KeyboardButton("📊 رصيدي وحالتي"), types.KeyboardButton("🔑 إدخال / تحديث التوكن"))
-    return kb
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        token = loop.run_until_complete(_async_fetch())
+        loop.close()
+        return token
+    except Exception as e:
+        logging.error(f"خطأ Event Loop: {e}")
+        return None
 
 # ----------------------------------------------------
-# 4. أوامر التيليجرام
+# 3. محرك التعدين والمهام
+# ----------------------------------------------------
+class AccountWorker:
+    def __init__(self, chat_id):
+        self.chat_id = chat_id
+        self.init_data = None
+        self.tg_id = str(chat_id)
+        self.device_id = f"dev-{uuid.uuid4()}"
+        
+        self.is_running = False
+        self.stop_event = threading.Event()
+        self.thread = None
+
+        self.pool_balance = 0.0
+        self.pending_reward = 0.0
+        self.team_wallet_balance = 0.0
+        self.miner_level = 0
+        self.total_claims = 0
+        self.total_team_claims = 0
+        self.total_boosts = 0
+        self.completed_tasks = 0
+        self.last_status = "جاري جلب التوكن..."
+        self.message_id = None
+        self.last_rendered_text = ""
+        self.last_token_time = 0
+
+        self.task_cooldowns = {}
+        self.task_start_times = {}
+        self.last_cycle_sec = 8.5
+        self.avg_gain_per_cycle = 0.0100
+
+        self.session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        self.session.mount("https://", HTTPAdapter(max_retries=retries))
+
+    def update_headers(self, new_token):
+        self.init_data = new_token
+        match = re.search(r'id%22%3A(\d+)', new_token) or re.search(r'"id":(\d+)', new_token)
+        if match:
+            self.tg_id = str(match.group(1))
+
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Origin": "https://atfminers.asloni.online",
+            "Referer": "https://atfminers.asloni.online/miner/index.html",
+            "x-telegram-init-data": self.init_data
+        })
+
+    def refresh_token_if_needed(self):
+        # تجديد التوكن كل ساعتين ونصف
+        if not self.init_data or (time.time() - self.last_token_time > 9000):
+            token = fetch_token_from_tg()
+            if token:
+                self.update_headers(token)
+                self.last_token_time = time.time()
+                self.last_status = "🔄 تم تجديد التوكن تلقائياً"
+                return True
+            else:
+                self.last_status = "⚠️ تعذر جلب التوكن تلقائياً"
+                return False
+        return True
+
+    def send_req(self, action: str, extra: dict = None):
+        url = f"{BASE_URL}?action={action}&t={int(time.time() * 1000)}"
+        payload = {
+            "initData": self.init_data,
+            "device_id": self.device_id,
+            "request_id": str(uuid.uuid4()),
+            "tg_id": str(self.tg_id)
+        }
+        if extra:
+            payload.update(extra)
+        try:
+            r = self.session.post(url, json=payload, timeout=12)
+            if r.status_code == 200:
+                res = r.json()
+                if "tma_session_token" in res:
+                    self.session.headers["x-atf-tma-session"] = res["tma_session_token"]
+                return res
+        except Exception as e:
+            logging.error(f"خطأ ({self.chat_id}) عند طلب {action}: {e}")
+        return None
+
+    def claim_mining_reward(self):
+        payload = {"claim_preview": round(self.pending_reward, 4)}
+        res = self.send_req("claim", payload)
+        if res and res.get("status") == "success":
+            self.total_claims += 1
+            claimed = res.get("claimed_amount", 0)
+            self.pool_balance = res.get("new_pool_balance", self.pool_balance + claimed)
+            self.pending_reward = 0.0
+            self.last_status = f"✅ تم جمع التعدين (+{claimed} ATF)"
+            return True
+        return False
+
+    def claim_team_wallet(self):
+        res = self.send_req("claim_team_wallet")
+        if res and (res.get("status") == "success" or res.get("ok") is True):
+            self.total_team_claims += 1
+            claimed = float(res.get("claimed_amount", self.team_wallet_balance))
+            self.last_status = f"💸 تم سحب محفظة الفريق (+{claimed:.4f} USDT)"
+            self.team_wallet_balance = 0.0
+            try:
+                bot.send_message(
+                    self.chat_id,
+                    f"🎉 <b>تم سحب محفظة الفريق تلقائياً!</b>\n"
+                    f"💰 القيمة: <code>{claimed:.4f} USDT</code>\n"
+                    f"💳 رصيدك وصل للحد الأدنى (0.5) وتم السحب بنجاح."
+                )
+            except Exception:
+                pass
+            return True
+        return False
+
+    def boost(self):
+        old_pending = self.pending_reward
+        res = self.send_req("activate_boost", {
+            "display_preview": round(self.pending_reward + 0.01, 4)
+        })
+        if res and res.get("status") == "success":
+            self.total_boosts += 1
+            new_pending = float(res.get("pending_reward", self.pending_reward))
+            
+            gain = new_pending - old_pending
+            if gain > 0:
+                self.avg_gain_per_cycle = round((self.avg_gain_per_cycle * 0.7) + (gain * 0.3), 5)
+
+            self.pending_reward = new_pending
+            self.last_cycle_sec = max(8.5, float(res.get("boost_cycle_seconds", 8)) + 0.5)
+            self.last_status = f"⚡ تسريع نشط (#{self.total_boosts})"
+            return self.last_cycle_sec
+        return 8.5
+
+    def process_tasks(self):
+        now = int(time.time())
+        for task in REPEATABLE_TASKS:
+            if self.stop_event.is_set():
+                break
+            if self.task_cooldowns.get(task, 0) > now:
+                continue
+
+            start_timestamp = self.task_start_times.get(task, now - 30)
+            c = self.send_req("claim_task", {"task_id": task, "client_started_at": start_timestamp})
+            if c and c.get("status") == "success":
+                rew = c.get("reward", 1)
+                self.completed_tasks += 1
+                self.pool_balance = float(c.get("new_balance", self.pool_balance + rew))
+                self.task_cooldowns[task] = int(c.get("next_available", now + 7200))
+                self.last_status = f"🎁 تم جمع مهمة: {task} (+{rew} ATF)"
+                self.update_ui()
+                self.stop_event.wait(3.0)
+                continue
+
+            started_at = int(time.time())
+            s = self.send_req("start_task", {"task_id": task, "client_started_at": started_at})
+            if s and s.get("status") == "success":
+                self.task_start_times[task] = started_at
+                dur = int(s.get("task_duration", 15))
+                self.last_status = f"⏳ جاري تنفيذ: {task}"
+                self.update_ui()
+                self.stop_event.wait(dur + 2)
+
+                claim_res = self.send_req("claim_task", {"task_id": task, "client_started_at": started_at})
+                if claim_res and claim_res.get("status") == "success":
+                    rew = claim_res.get("reward", 1)
+                    self.completed_tasks += 1
+                    self.pool_balance = float(claim_res.get("new_balance", self.pool_balance + rew))
+                    self.task_cooldowns[task] = int(claim_res.get("next_available", now + 7200))
+                    self.last_status = f"🎁 تم جمع مهمة: {task} (+{rew} ATF)"
+                    self.update_ui()
+
+            self.stop_event.wait(3.0)
+
+    def get_text(self):
+        state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
+        progress = min(100, int((self.pending_reward / 1.0) * 100))
+        bars = int(10 * (progress / 100))
+        bar = "█" * bars + "░" * (10 - bars)
+
+        return (
+            f"<b>🤖 لوحة تحكم مائنر ATF الذكية</b>\n\n"
+            f"• <b>الحالة:</b> {state}\n"
+            f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
+            f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n"
+            f"• <b>محفظة الفريق:</b> <code>{self.team_wallet_balance:.4f} USDT</code> (سحب عند 0.5)\n\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>💰 تعدين العملات (هدف 1 ATF):</b>\n"
+            f"• <b>التقدم:</b> <code>[{bar}] {progress}%</code>\n"
+            f"• <b>المعلق:</b> <code>{self.pending_reward:.4f} / 1.0 ATF</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>المهام المنجزة:</b> <code>{self.completed_tasks}</code>\n"
+            f"• <b>جمع التعدين:</b> <code>{self.total_claims}</code> | <b>سحب الفريق:</b> <code>{self.total_team_claims}</code>\n"
+            f"• <b>مرات التسريع:</b> <code>{self.total_boosts}</code>\n"
+            f"• <b>آخر نشاط:</b> <code>{self.last_status}</code>\n"
+            f"<i>(التوكن يتجدد ذاتياً كل ساعتين ونصف 🔄)</i>"
+        )
+
+    def get_markup(self):
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
+        btn_claim = types.InlineKeyboardButton("💰 جمع يدوي", callback_data="claim")
+        btn_claim_team = types.InlineKeyboardButton("💸 سحب الفريق الآن", callback_data="claim_team")
+        markup.add(btn_toggle, btn_claim)
+        markup.add(btn_claim_team)
+        return markup
+
+    def update_ui(self):
+        if not self.message_id:
+            return
+        new_text = self.get_text()
+        if new_text == self.last_rendered_text:
+            return
+        try:
+            bot.edit_message_text(new_text, self.chat_id, self.message_id, reply_markup=self.get_markup())
+            self.last_rendered_text = new_text
+        except Exception:
+            pass
+
+    def loop(self):
+        cycle = 0
+        while not self.stop_event.is_set():
+            try:
+                # التحقق وتجديد التوكن تلقائياً
+                if not self.refresh_token_if_needed():
+                    self.stop_event.wait(30.0)
+                    continue
+
+                login = self.send_req("login")
+                if login and login.get("status") == "success":
+                    u = login.get("user", {})
+                    self.pool_balance = float(u.get("mined_balance", self.pool_balance))
+                    self.miner_level = int(u.get("miner_level", self.miner_level))
+                    team_bal = float(u.get("team_wallet_balance", login.get("team_wallet_balance", self.team_wallet_balance)))
+                    self.team_wallet_balance = team_bal
+
+                    server_cooldowns = login.get("task_cooldowns", {})
+                    if server_cooldowns:
+                        self.task_cooldowns.update(server_cooldowns)
+
+                if self.team_wallet_balance >= 0.5:
+                    self.claim_team_wallet()
+
+                cycle_sec = self.boost()
+
+                if self.pending_reward >= 1.0:
+                    self.claim_mining_reward()
+
+                if cycle % 6 == 0:
+                    self.process_tasks()
+
+                self.update_ui()
+                cycle += 1
+                self.stop_event.wait(cycle_sec)
+            except Exception as e:
+                logging.error(f"خطأ في حلقة {self.chat_id}: {e}")
+                self.stop_event.wait(5.0)
+
+    def start(self, message_id=None):
+        if message_id:
+            self.message_id = message_id
+        if not self.is_running:
+            self.is_running = True
+            self.stop_event.clear()
+            self.thread = threading.Thread(target=self.loop, daemon=True)
+            self.thread.start()
+
+    def stop(self):
+        if self.is_running:
+            self.is_running = False
+            self.stop_event.set()
+            self.update_ui()
+
+# ----------------------------------------------------
+# 4. أوامر البوت
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
-def welcome(msg):
-    uid = msg.from_user.id
-    if uid not in users_mining:
-        users_mining[uid] = {"active": False, "token": None, "usdt": 0.0, "rate": 0.0, "hits": 0, "status": "غير مفعل"}
-    bot.send_message(msg.chat.id, "👋 مرحباً بك! اضغط على 🔑 إدخال / تحديث التوكن للبدء.", reply_markup=get_menu())
-
-@bot.message_handler(func=lambda msg: True)
-def handle_text(msg):
-    uid = msg.from_user.id
-    text = msg.text.strip()
-    if uid not in users_mining:
-        users_mining[uid] = {"active": False, "token": None, "usdt": 0.0, "rate": 0.0, "hits": 0, "status": "غير مفعل"}
-
-    if text == "🔑 إدخال / تحديث التوكن":
-        sent = bot.send_message(msg.chat.id, "أرسل التوكن (initData) أو الرابط كاملاً:")
-        bot.register_next_step_handler(sent, save_token)
-    elif text == "▶️ بدء التعدين والسحب":
-        if not users_mining[uid]["token"]:
-            bot.send_message(msg.chat.id, "⚠️ أدخل التوكن أولاً عبر الزر المخصص.")
-            return
-        if not users_mining[uid]["active"]:
-            users_mining[uid]["active"] = True
-            threading.Thread(target=mining_thread, args=(uid,), daemon=True).start()
-            bot.send_message(msg.chat.id, "✅ بدأ التعدين والمراقبة للسحب التلقائي عند 0.5.")
-        else:
-            bot.send_message(msg.chat.id, "⚡ التعدين قيد التشغيل بالفعل.")
-    elif text == "⏹️ إيقاف التعدين":
-        users_mining[uid]["active"] = False
-        users_mining[uid]["status"] = "متوقف"
-        bot.send_message(msg.chat.id, "🛑 تم إيقاف العملية.")
-    elif text == "📊 رصيدي وحالتي":
-        u = users_mining[uid]
-        rep = f"📊 الرصيد: {u['usdt']} USDT\n⚡ الحالة: {u['status']}\n🔄 النبضات: {u['hits']}"
-        bot.send_message(msg.chat.id, rep)
-
-def save_token(msg):
-    uid = msg.from_user.id
-    data = msg.text.strip()
-    if "#tgWebAppData=" in data:
-        token = urllib.parse.unquote(data.split("#tgWebAppData=")[1].split("&")[0])
+def cmd_start(message):
+    cid = message.chat.id
+    if cid not in active_workers:
+        worker = AccountWorker(chat_id=cid)
+        active_workers[cid] = worker
     else:
-        token = data
-    if "query_id=" in token or "user=" in token:
-        users_mining[uid]["token"] = token
-        bot.send_message(msg.chat.id, "✅ تم حفظ التوكن! اضغط الآن على ▶️ بدء التعدين والسحب.")
-    else:
-        bot.send_message(msg.chat.id, "❌ التوكن غير صالح، يرجى التأكد وإعادة المحاولة.")
+        worker = active_workers[cid]
+
+    sent = bot.send_message(cid, worker.get_text(), reply_markup=worker.get_markup())
+    worker.message_id = sent.message_id
+    worker.start(sent.message_id)
+
+@bot.callback_query_handler(func=lambda call: True)
+def on_click(call):
+    cid = call.message.chat.id
+    if cid not in active_workers:
+        bot.answer_callback_query(call.id, "أرسل /start أولاً.")
+        return
+
+    w = active_workers[cid]
+    w.message_id = call.message.message_id
+
+    if call.data == "start":
+        w.start(call.message.message_id)
+        bot.answer_callback_query(call.id, "تم البدء 🚀")
+    elif call.data == "stop":
+        w.stop()
+        bot.answer_callback_query(call.id, "تم الإيقاف 🛑")
+    elif call.data == "claim":
+        w.claim_mining_reward()
+        bot.answer_callback_query(call.id, "تم الجمع ✅")
+    elif call.data == "claim_team":
+        w.claim_team_wallet()
+        bot.answer_callback_query(call.id, "جاري طلب سحب محفظة الفريق 💸")
+
+    w.update_ui()
 
 if __name__ == "__main__":
     while True:
         try:
-            bot.remove_webhook()
-            time.sleep(1)
-            bot.infinity_polling(skip_pending=True, timeout=20)
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception:
             time.sleep(3)
