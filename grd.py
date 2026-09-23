@@ -36,8 +36,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8932223242:AAGbsCURW1NBWElJGZTMJxCI0EUQxAWKqE4")
-
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758904544:AAHvQ6wGbUYfw3RwBPjSY-x-V4dZesOBg5c
 STRING_SESSION = os.environ.get(
     "STRING_SESSION",
     "1BJWap1wBu75aRV8dKyTomYxlTJiCyBZ-QSA_ttAgtplZ6g1OVBmtnWzYJ32uVMADYOD9HYw8XrZsbryA26qjcwQmSMSOgtTKK1HzA3FiNkEpmRTKuoYQF2iTNmwUpBOOOAqbUv3URy3VAIAYFEOh6TiqdJLws8dSbvmX73hH_s7qBVB_OrPw57JmjaZr6X4dfKFDIiZz-ARIuHOzts6xoacy-9eewjMBW5L8keUTQ8PfHqO6f1DescExyPNMW54EfOVDktwCY8wGkkt8DVrRgXj6mE-kYmGgK_Tv9V69Bn_LuVjWsROi0cfTtzABDistDyNZVWeRqJhyXzhZqhpqT98YxT5hbnU="
