@@ -15,7 +15,6 @@ from telebot import types
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
-from telethon.errors import SessionPasswordNeededError
 
 # ----------------------------------------------------
 # 0. خادم ويب لإبقاء السيرفر نشطاً على Render
@@ -33,15 +32,22 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات التيليجرام والمنصة
+# 1. إعدادات التيليجرام والجلسة الجديدة
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8758904544:AAHvQ6wGbUYfw3RwBPjSY-x-V4dZesOBg5c")
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+# الجلسة النصية المستخرجة من Pydroid 3
+STRING_SESSION = os.environ.get(
+    "STRING_SESSION",
+    "1BJWap1sBu6DmwMHwL7b2y2BXT0NEuMx2AtKJfXP2lFn0nFjkkIwdOP7o0kU-c1FmWpeZY97GHXFq2S1MKJC3AKZzv9qm_KUptTT4JkA2imZe7lMOd4VIiHgSdHzg-lqFibD2zPiVlOfDUod4H06d2zcW0M5c0dqme7WM0fpovLJEDQV_DzLxAgepTW2hOL0MMFmjUZLVBRGKELWpyjhbHaFAJcPhBkPkZyoAdO_Dk5wfF_AYf-3zOT2KvKPl0b_E4cskvzuH6Lw9l0Me9VAjVnvsnaAxYI2RZ_QhoN3yJpovVlCSuVOfoQDkILyUUwNuiOzjlOqn9IGQc2ywlzFAE1L-dGNTKMs="
+)
+
 BASE_URL = "https://atfminers.asloni.online/miner/index.php"
 DEFAULT_APP_URL = "https://atfminers.asloni.online/miner/index.html"
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 REPEATABLE_TASKS = [
     "youtube_like_comment",
@@ -56,6 +62,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+active_workers = {}
+waiting_target_bot = set()
+waiting_manual_token = set()
+
 # ----------------------------------------------------
 # 2. حلقة أحداث مخصصة للـ Telethon في خيط مستقل
 # ----------------------------------------------------
@@ -67,12 +77,6 @@ def start_telethon_loop(loop):
 
 threading.Thread(target=start_telethon_loop, args=(telethon_loop,), daemon=True).start()
 
-active_auth_clients = {}
-active_workers = {}
-user_login_flows = {}
-waiting_manual_token = set()
-waiting_target_bot = set()
-
 class TelethonManager:
     @staticmethod
     def run_coro(coro):
@@ -80,74 +84,16 @@ class TelethonManager:
         return future.result(timeout=25.0)
 
     @classmethod
-    def send_code(cls, cid, phone_number):
-        async def _send():
-            if cid in active_auth_clients:
-                try:
-                    await active_auth_clients[cid].disconnect()
-                except Exception:
-                    pass
-
-            client = TelegramClient(StringSession(), API_ID, API_HASH, loop=telethon_loop)
-            await client.connect()
-            res = await client.send_code_request(phone_number)
-            active_auth_clients[cid] = client
-            return res.phone_code_hash
-        return cls.run_coro(_send())
-
-    @classmethod
-    def sign_in(cls, cid, phone, phone_code_hash, code):
-        async def _sign():
-            client = active_auth_clients.get(cid)
-            if not client or not client.is_connected():
-                return "EXPIRED_SESSION", "انقطع الاتصال، يرجى طلب الرمز مجدداً"
-            try:
-                await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
-                final_session = client.session.save()
-                await client.disconnect()
-                if cid in active_auth_clients:
-                    del active_auth_clients[cid]
-                return "SUCCESS", final_session
-            except SessionPasswordNeededError:
-                return "2FA_REQUIRED", ""
-            except Exception as e:
-                await client.disconnect()
-                if cid in active_auth_clients:
-                    del active_auth_clients[cid]
-                return "ERROR", str(e)
-        return cls.run_coro(_sign())
-
-    @classmethod
-    def sign_in_password(cls, cid, password):
-        async def _sign_2fa():
-            client = active_auth_clients.get(cid)
-            if not client or not client.is_connected():
-                return "EXPIRED_SESSION", "انقطع الاتصال، يرجى البدء من جديد"
-            try:
-                await client.sign_in(password=password)
-                final_session = client.session.save()
-                await client.disconnect()
-                if cid in active_auth_clients:
-                    del active_auth_clients[cid]
-                return "SUCCESS", final_session
-            except Exception as e:
-                await client.disconnect()
-                if cid in active_auth_clients:
-                    del active_auth_clients[cid]
-                return "ERROR", str(e)
-        return cls.run_coro(_sign_2fa())
-
-    @classmethod
-    def fetch_token(cls, session_str, target_bot="atfminers_bot", app_url=DEFAULT_APP_URL):
+    def fetch_token(cls, target_bot="atfminers_bot", app_url=DEFAULT_APP_URL):
         target_clean = target_bot.replace("@", "").strip()
 
         async def _fetch():
-            client = TelegramClient(StringSession(session_str), API_ID, API_HASH, loop=telethon_loop)
+            client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH, loop=telethon_loop)
             try:
                 await client.connect()
                 if not await client.is_user_authorized():
                     await client.disconnect()
-                    return None, "الجلسة منتهية"
+                    return None, "الجلسة النصية منتهية"
 
                 bot_entity = await client.get_input_entity(target_clean)
                 web_view = await client(RequestWebViewRequest(
@@ -172,14 +118,13 @@ class TelethonManager:
         return cls.run_coro(_fetch())
 
 # ----------------------------------------------------
-# 3. محرك التعدين والمهام
+# 3. محرك الحساب والتعدين
 # ----------------------------------------------------
 class AccountWorker:
-    def __init__(self, chat_id, string_session=None, init_data=None):
+    def __init__(self, chat_id):
         self.chat_id = chat_id
-        self.string_session = string_session
-        self.init_data = init_data
-        self.tg_id = self.extract_user_id(init_data) if init_data else str(chat_id)
+        self.init_data = None
+        self.tg_id = str(chat_id)
         self.device_id = f"dev-{uuid.uuid4()}"
         
         self.is_running = False
@@ -194,7 +139,7 @@ class AccountWorker:
         self.total_team_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
-        self.last_status = "جاهز للبدء"
+        self.last_status = "جاري سحب التوكن تلقائياً..."
         self.message_id = None
         self.last_rendered_text = ""
         self.last_token_time = 0
@@ -208,21 +153,13 @@ class AccountWorker:
         self.session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
-        if self.init_data:
-            self.update_headers(self.init_data)
-
-    def extract_user_id(self, raw_data):
-        try:
-            match = re.search(r'id%22%3A(\d+)', raw_data) or re.search(r'"id":(\d+)', raw_data)
-            if match:
-                return str(match.group(1))
-        except Exception:
-            pass
-        return str(self.chat_id)
 
     def update_headers(self, new_token):
         self.init_data = new_token
-        self.tg_id = self.extract_user_id(new_token)
+        match = re.search(r'id%22%3A(\d+)', new_token) or re.search(r'"id":(\d+)', new_token)
+        if match:
+            self.tg_id = str(match.group(1))
+
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
             "Content-Type": "application/json",
@@ -233,18 +170,20 @@ class AccountWorker:
         })
 
     def auto_pull_token(self):
-        if not self.string_session:
-            self.last_status = "⚠️ لا توجد جلسة مسجلة للحساب"
-            return False
-        token, msg = TelethonManager.fetch_token(self.string_session, self.target_bot)
+        token, msg = TelethonManager.fetch_token(self.target_bot)
         if token:
             self.update_headers(token)
             self.last_token_time = time.time()
             self.last_status = "🔄 تم سحب التوكن وبدأ التعدين"
             return True
         else:
-            self.last_status = f"⚠️ {msg}"
+            self.last_status = f"⚠️ فشل السحب: {msg}"
             return False
+
+    def refresh_token_if_needed(self):
+        if not self.init_data or (time.time() - self.last_token_time > 7200):
+            return self.auto_pull_token()
+        return True
 
     def send_req(self, action: str, extra: dict = None):
         url = f"{BASE_URL}?action={action}&t={int(time.time() * 1000)}"
@@ -358,7 +297,6 @@ class AccountWorker:
 
     def get_text(self):
         state = "🟢 يعمل تلقائياً" if self.is_running else "🔴 متوقف"
-        session_stat = "متصلة ✅" if self.string_session else "غير مسجلة ❌"
         progress = min(100, int((self.pending_reward / 1.0) * 100))
         bars = int(10 * (progress / 100))
         bar = "█" * bars + "░" * (10 - bars)
@@ -366,7 +304,6 @@ class AccountWorker:
         return (
             f"<b>🤖 لوحة تحكم مائنر ATF الذكية</b>\n\n"
             f"• <b>الحالة:</b> {state}\n"
-            f"• <b>الجلسة:</b> <code>{session_stat}</code>\n"
             f"• <b>المستوى:</b> <code>Lv {self.miner_level}</code>\n"
             f"• <b>الرصيد المتاح:</b> <code>{self.pool_balance:.4f} ATF</code>\n"
             f"• <b>محفظة الفريق:</b> <code>{self.team_wallet_balance:.4f} USDT</code> (سحب عند 0.5)\n\n"
@@ -386,13 +323,13 @@ class AccountWorker:
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_toggle = types.InlineKeyboardButton("🛑 إيقاف", callback_data="stop") if self.is_running else types.InlineKeyboardButton("🚀 تشغيل", callback_data="start")
         btn_claim = types.InlineKeyboardButton("💰 جمع يدوي", callback_data="claim")
-        btn_login = types.InlineKeyboardButton("📱 تسجيل دخول رقم", callback_data="tg_login")
         btn_pull = types.InlineKeyboardButton("🎯 سحب التوكن من بوت", callback_data="ask_bot_user")
+        btn_auto_now = types.InlineKeyboardButton("🔄 سحب التوكن الآن", callback_data="pull_now")
         btn_manual = types.InlineKeyboardButton("🔑 إدخال توكن يدوي", callback_data="manual_token")
         btn_claim_team = types.InlineKeyboardButton("💸 سحب الفريق الآن", callback_data="claim_team")
 
         markup.add(btn_toggle, btn_claim)
-        markup.add(btn_login, btn_pull)
+        markup.add(btn_auto_now, btn_pull)
         markup.add(btn_manual, btn_claim_team)
         return markup
 
@@ -412,14 +349,10 @@ class AccountWorker:
         cycle = 0
         while not self.stop_event.is_set():
             try:
-                if not self.init_data:
-                    if self.string_session:
-                        self.auto_pull_token()
-                    else:
-                        self.last_status = "⚠️ بانتظار تسجيل الدخول أو إدخال التوكن"
-                        self.update_ui()
-                        self.stop_event.wait(10.0)
-                        continue
+                if not self.refresh_token_if_needed():
+                    self.update_ui()
+                    self.stop_event.wait(10.0)
+                    continue
 
                 login = self.send_req("login")
                 if login and login.get("status") == "success":
@@ -467,7 +400,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 4. أوامر البوت والتفاعل مع المستخدم
+# 4. أوامر البوت
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -503,10 +436,9 @@ def on_click(call):
     elif call.data == "claim_team":
         w.claim_team_wallet()
         bot.answer_callback_query(call.id, "جاري طلب سحب محفظة الفريق 💸")
-    elif call.data == "tg_login":
-        user_login_flows[cid] = {"step": "WAIT_PHONE"}
-        bot.send_message(cid, "📱 <b>أرسل رقم هاتفك مع رمز الدولة الآن:</b>\n(مثال: <code>+905123456789</code>)")
-        bot.answer_callback_query(call.id, "بانتظار الرقم...")
+    elif call.data == "pull_now":
+        bot.answer_callback_query(call.id, "جاري سحب التوكن...")
+        w.auto_pull_token()
     elif call.data == "ask_bot_user":
         waiting_target_bot.add(cid)
         bot.send_message(cid, "🎯 <b>أرسل يوزرنيم البوت الذي تريد سحب التوكن منه:</b>\n(مثال: <code>atfminers_bot</code>)")
@@ -519,7 +451,7 @@ def on_click(call):
     w.update_ui()
 
 # ----------------------------------------------------
-# 5. معالجة الرسائل ومدخلات المستخدم
+# 5. معالجة الرسائل
 # ----------------------------------------------------
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
@@ -530,7 +462,7 @@ def handle_all_messages(message):
         w = AccountWorker(chat_id=cid)
         active_workers[cid] = w
 
-    # 1. إدخال التوكن اليدوي
+    # إدخال يدوي
     if cid in waiting_manual_token:
         waiting_manual_token.remove(cid)
         raw_text = text
@@ -548,7 +480,7 @@ def handle_all_messages(message):
         bot.send_message(cid, "✅ تم تعيين التوكن بنجاح! بدأ العمل.")
         return
 
-    # 2. تحديد يوزر البوت وسحب التوكن
+    # تحديد يوزر البوت المستهدف
     if cid in waiting_target_bot:
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
@@ -559,73 +491,6 @@ def handle_all_messages(message):
             bot.send_message(cid, f"⚠️ لم يتم السحب: {w.last_status}")
         w.update_ui()
         return
-
-    # 3. خطوات تسجيل الدخول التفاعلية (رقم -> كود -> 2FA)
-    if cid in user_login_flows:
-        flow = user_login_flows[cid]
-        step = flow.get("step")
-
-        if step == "WAIT_PHONE":
-            phone = text.replace(" ", "")
-            bot.send_message(cid, f"⏳ جاري طلب رمز التحقق للرقم <code>{phone}</code>...")
-            try:
-                phone_code_hash = TelethonManager.send_code(cid, phone)
-                user_login_flows[cid] = {
-                    "step": "WAIT_CODE",
-                    "phone": phone,
-                    "phone_code_hash": phone_code_hash
-                }
-                bot.send_message(cid, "📩 <b>وصلك رمز التيليجرام!</b>\nأرسل الكود هنا:")
-            except Exception as e:
-                bot.send_message(cid, f"❌ فشل إرسال الرمز: {e}")
-                del user_login_flows[cid]
-            return
-
-        elif step == "WAIT_CODE":
-            code = text.replace(" ", "").strip()
-            phone = flow["phone"]
-            phone_code_hash = flow["phone_code_hash"]
-
-            bot.send_message(cid, "⏳ جاري التحقق من الكود...")
-            try:
-                status, result = TelethonManager.sign_in(cid, phone, phone_code_hash, code)
-
-                if status == "SUCCESS":
-                    w.string_session = result
-                    del user_login_flows[cid]
-                    bot.send_message(cid, "🎉 <b>تم تسجيل الدخول بنجاح!</b>\nجاري سحب التوكن والبدء في التعدين...")
-                    w.auto_pull_token()
-                    w.update_ui()
-                elif status == "2FA_REQUIRED":
-                    user_login_flows[cid]["step"] = "WAIT_PASSWORD"
-                    bot.send_message(cid, "🔐 <b>حسابك محمي بالتحقق بخطوتين (2FA):</b>\nأرسل كلمة السر الخاصة بحسابك الآن:")
-                else:
-                    bot.send_message(cid, f"❌ فشل تسجيل الدخول: {result}")
-                    del user_login_flows[cid]
-            except Exception as e:
-                bot.send_message(cid, f"❌ حدث خطأ أثناء التحقق: {e}")
-                del user_login_flows[cid]
-            return
-
-        elif step == "WAIT_PASSWORD":
-            password = text.strip()
-            bot.send_message(cid, "⏳ جاري التحقق من كلمة السر...")
-            try:
-                status, result = TelethonManager.sign_in_password(cid, password)
-
-                if status == "SUCCESS":
-                    w.string_session = result
-                    del user_login_flows[cid]
-                    bot.send_message(cid, "🎉 <b>تم تأكيد كلمة السر وحفظ الجلسة!</b>\nجاري سحب التوكن...")
-                    w.auto_pull_token()
-                    w.update_ui()
-                else:
-                    bot.send_message(cid, f"❌ كلمة السر غير صحيحة: {result}")
-                    del user_login_flows[cid]
-            except Exception as e:
-                bot.send_message(cid, f"❌ خطأ في كلمة السر: {e}")
-                del user_login_flows[cid]
-            return
 
 # ----------------------------------------------------
 # 6. تشغيل محرك البوت
