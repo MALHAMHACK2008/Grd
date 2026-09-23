@@ -36,7 +36,10 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
-SESSION_NAME = "malham_session"
+
+# المسار الدقيق لملف الجلسة ليقرأه السيرفر أينما كان مسار التشغيل
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SESSION_FILE = os.path.join(BASE_DIR, "malham_session")
 
 ATF_BOT_USERNAME = "atfminers_bot"
 ATF_APP_URL = "https://atfminers.asloni.online/miner/index.html"
@@ -65,10 +68,10 @@ active_workers = {}
 # ----------------------------------------------------
 def fetch_token_from_tg():
     async def _async_fetch():
-        client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+        client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
         await client.connect()
         if not await client.is_user_authorized():
-            logging.error("حساب تيليجرام غير مسجل الدخول. يلزم تجهيز ملف الجلسة session.")
+            logging.error("حساب تيليجرام غير مسجل الدخول أو ملف الجلسة غير صالح.")
             await client.disconnect()
             return None
         
@@ -124,7 +127,7 @@ class AccountWorker:
         self.total_team_claims = 0
         self.total_boosts = 0
         self.completed_tasks = 0
-        self.last_status = "جاري جلب التوكن..."
+        self.last_status = "جاري الاتصال بملف الجلسة وجلب التوكن..."
         self.message_id = None
         self.last_rendered_text = ""
         self.last_token_time = 0
@@ -154,16 +157,15 @@ class AccountWorker:
         })
 
     def refresh_token_if_needed(self):
-        # تجديد التوكن كل ساعتين ونصف
         if not self.init_data or (time.time() - self.last_token_time > 9000):
             token = fetch_token_from_tg()
             if token:
                 self.update_headers(token)
                 self.last_token_time = time.time()
-                self.last_status = "🔄 تم تجديد التوكن تلقائياً"
+                self.last_status = "🔄 تم جلب وتجديد التوكن بنجاح"
                 return True
             else:
-                self.last_status = "⚠️ تعذر جلب التوكن تلقائياً"
+                self.last_status = "⚠️ تعذر جلب التوكن (تأكد من ملف malham_session.session)"
                 return False
         return True
 
@@ -327,9 +329,9 @@ class AccountWorker:
         cycle = 0
         while not self.stop_event.is_set():
             try:
-                # التحقق وتجديد التوكن تلقائياً
                 if not self.refresh_token_if_needed():
-                    self.stop_event.wait(30.0)
+                    self.update_ui()
+                    self.stop_event.wait(20.0)
                     continue
 
                 login = self.send_req("login")
