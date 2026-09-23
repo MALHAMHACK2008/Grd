@@ -34,7 +34,7 @@ def run_flask():
 threading.Thread(target=run_flask, daemon=True).start()
 
 # ----------------------------------------------------
-# 1. إعدادات التيليجرام والجلسات
+# 1. إعدادات التيليجرام والتوكن الجديد
 # ----------------------------------------------------
 API_ID = 36791169
 API_HASH = "d3965b64eb7e251a915ccd8ce3ee8104"
@@ -84,7 +84,6 @@ def save_user_session(cid, session_str):
 
 saved_user_sessions = load_user_sessions()
 
-# تشغيل حلقة أحداث Telethon في خيط خلفي
 telethon_loop = asyncio.new_event_loop()
 
 def start_telethon_loop(loop):
@@ -100,13 +99,13 @@ waiting_target_bot = set()
 waiting_manual_token = set()
 
 # ----------------------------------------------------
-# 3. إدارة تسجيل الدخول وسحب التوكن عبر Telethon
+# 3. إدارة تسجيل الدخول وتثبيت الاتصال (حل مشكلة انتهاء الكود)
 # ----------------------------------------------------
 class TelethonManager:
     @staticmethod
     def run_coro(coro):
         future = asyncio.run_coroutine_threadsafe(coro, telethon_loop)
-        return future.result(timeout=30.0)
+        return future.result(timeout=40.0)
 
     @classmethod
     def send_code(cls, cid, phone_number):
@@ -117,7 +116,8 @@ class TelethonManager:
                 except Exception:
                     pass
 
-            client = TelegramClient(StringSession(), API_ID, API_HASH, loop=telethon_loop)
+            session_name = f"auth_{cid}"
+            client = TelegramClient(session_name, API_ID, API_HASH, loop=telethon_loop)
             await client.connect()
             res = await client.send_code_request(phone_number)
             active_auth_clients[cid] = client
@@ -129,18 +129,27 @@ class TelethonManager:
         async def _sign():
             client = active_auth_clients.get(cid)
             if not client or not client.is_connected():
-                return "EXPIRED_SESSION", "انقطع الاتصال بالسيرفر، أعد المحاولة من البداية."
+                return "EXPIRED_SESSION", "انقطع الاتصال بالسيرفر، يرجى إعادة طلب الرمز مجدداً."
             try:
                 await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
-                final_session = client.session.save()
+                final_session = StringSession.save(client.session)
                 await client.disconnect()
+                
+                if os.path.exists(f"auth_{cid}.session"):
+                    os.remove(f"auth_{cid}.session")
                 if cid in active_auth_clients:
                     del active_auth_clients[cid]
+                    
                 return "SUCCESS", final_session
             except SessionPasswordNeededError:
                 return "2FA_REQUIRED", ""
             except Exception as e:
                 await client.disconnect()
+                if os.path.exists(f"auth_{cid}.session"):
+                    try:
+                        os.remove(f"auth_{cid}.session")
+                    except Exception:
+                        pass
                 if cid in active_auth_clients:
                     del active_auth_clients[cid]
                 return "ERROR", str(e)
@@ -151,16 +160,25 @@ class TelethonManager:
         async def _sign_2fa():
             client = active_auth_clients.get(cid)
             if not client or not client.is_connected():
-                return "EXPIRED_SESSION", "انقطع الاتصال، يرجى إعادة المحاولة."
+                return "EXPIRED_SESSION", "انقطع الاتصال، يرجى المحاولة من البداية."
             try:
                 await client.sign_in(password=password)
-                final_session = client.session.save()
+                final_session = StringSession.save(client.session)
                 await client.disconnect()
+                
+                if os.path.exists(f"auth_{cid}.session"):
+                    os.remove(f"auth_{cid}.session")
                 if cid in active_auth_clients:
                     del active_auth_clients[cid]
+                    
                 return "SUCCESS", final_session
             except Exception as e:
                 await client.disconnect()
+                if os.path.exists(f"auth_{cid}.session"):
+                    try:
+                        os.remove(f"auth_{cid}.session")
+                    except Exception:
+                        pass
                 if cid in active_auth_clients:
                     del active_auth_clients[cid]
                 return "ERROR", str(e)
@@ -317,7 +335,6 @@ class AccountWorker:
 
             self.pending_reward = new_pending
             self.last_status = f"⚡ تسريع نشط (#{self.total_boosts})"
-        # التسريع ثابت كل 5 ثوانٍ كما طلبت
         return 5.0
 
     def process_tasks(self):
@@ -430,7 +447,6 @@ class AccountWorker:
                     if server_cooldowns:
                         self.task_cooldowns.update(server_cooldowns)
 
-                # تسريع التعدين (كل 5 ثوانٍ)
                 cycle_sec = self.boost()
 
                 if self.pending_reward >= 1.0:
@@ -462,7 +478,7 @@ class AccountWorker:
             self.update_ui()
 
 # ----------------------------------------------------
-# 5. أوامر البوت والأزرار التفاعلية
+# 5. أوامر البوت والتفاعل
 # ----------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
@@ -519,7 +535,7 @@ def on_click(call):
     w.update_ui()
 
 # ----------------------------------------------------
-# 6. استقبال المدخلات (الرقم، الكود، 2FA، يوزر البوت، التوكن)
+# 6. معالجة المدخلات (الرقم، الكود، 2FA، يوزر البوت، التوكن اليدوي)
 # ----------------------------------------------------
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
@@ -530,7 +546,6 @@ def handle_all_messages(message):
         w = AccountWorker(chat_id=cid)
         active_workers[cid] = w
 
-    # 1. إدخال التوكن اليدوي
     if cid in waiting_manual_token:
         waiting_manual_token.remove(cid)
         raw_text = text
@@ -548,7 +563,6 @@ def handle_all_messages(message):
         bot.send_message(cid, "✅ تم تعيين التوكن بنجاح! بدأ العمل لحسابك.")
         return
 
-    # 2. تحديد البوت المستهدف لسحب التوكن منه
     if cid in waiting_target_bot:
         waiting_target_bot.remove(cid)
         w.target_bot = text.replace("@", "").strip()
@@ -560,7 +574,6 @@ def handle_all_messages(message):
         w.update_ui()
         return
 
-    # 3. تسجيل الدخول بالرقم واستقبال الرمز (Telethon Flow)
     if cid in user_login_flows:
         flow = user_login_flows[cid]
         step = flow.get("step")
